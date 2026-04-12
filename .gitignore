@@ -37,3 +37,5 @@ build/
 
 # Jupyter (if you ever use it)
 .ipynb_checkpoints/
+
+.claude
