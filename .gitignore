@@ -1,0 +1,39 @@
+.env
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual environments
+venv/
+.env/
+.venv/
+
+# Environment variables
+.env
+
+# VS Code / IDE
+.vscode/
+.idea/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Data / cache (important for your project)
+data/cache/
+
+# Test artifacts
+.pytest_cache/
+
+# Build / packaging
+dist/
+build/
+*.egg-info/
+
+# Jupyter (if you ever use it)
+.ipynb_checkpoints/
