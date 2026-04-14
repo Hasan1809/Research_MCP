@@ -5,6 +5,19 @@ from utils.logger import get_logger
 
 logger = get_logger(__name__)
 
+
+def _strip_code_fences(text: str) -> str:
+    """Remove markdown code fences (```json ... ``` or ``` ... ```) from LLM output."""
+    text = text.strip()
+    if text.startswith("```"):
+        # Remove opening fence line (```json or ```)
+        text = text[text.index("\n") + 1:] if "\n" in text else text[3:]
+        # Remove closing fence
+        if text.rstrip().endswith("```"):
+            text = text.rstrip()[:-3].rstrip()
+    return text.strip()
+
+
 _SYSTEM_PROMPT = """\
 You are a scientific information extractor. Extract information from the provided paper text.
 
@@ -148,7 +161,7 @@ def extract_field(field: str, text: str) -> tuple[list, str]:
     logger.debug("Raw completion (field=%r): %s", field, raw)
 
     try:
-        parsed = json.loads(raw)
+        parsed = json.loads(_strip_code_fences(raw))
     except json.JSONDecodeError as e:
         logger.error("Failed to parse LLM response for field=%r — returning empty. raw=%s error=%s", field, raw, e)
         return [], raw
@@ -190,7 +203,7 @@ def extract_insights(text: str) -> tuple[dict, str]:
     logger.debug("Raw model completion: %s", raw_completion)
 
     try:
-        parsed = json.loads(raw_completion)
+        parsed = json.loads(_strip_code_fences(raw_completion))
     except json.JSONDecodeError as e:
         logger.exception("Failed to parse LLM response as JSON: %s", e)
         raise
@@ -300,7 +313,7 @@ def build_profile(text: str) -> tuple[dict, str]:
     logger.debug("Raw profile completion: %s", raw)
 
     try:
-        parsed = json.loads(raw)
+        parsed = json.loads(_strip_code_fences(raw))
     except json.JSONDecodeError as e:
         logger.exception("Failed to parse profile response as JSON: %s", e)
         raise

@@ -4,3 +4,5 @@ pydantic
 python-dotenv
 pypdf
 chromadb
+pytest
+pytest-cov

@@ -88,6 +88,53 @@ def index_chunks(paper_id: str, source: str, chunks: list[str]) -> dict:
     return {"content_count": len(content_docs), "reference_count": len(ref_docs)}
 
 
+def index_structured_chunks(paper_id: str, source: str, chunks: list[dict]) -> dict:
+    """
+    Index section-aware chunks (from chunk_sections()) into a dedicated collection.
+    Each chunk dict must contain: text, section, section_index, chunk_in_section,
+    is_abstract, is_conclusion, position_ratio
+    """
+    collection_name = f"{source}_papers_sections"
+    logger.info("Opening sections collection: %s", collection_name)
+    col = _get_collection(collection_name, cosine=True)
+
+    ids, docs, metas = [], [], []
+    for i, chunk in enumerate(chunks):
+        ids.append(f"{paper_id}__sec_{chunk['section_index']}__chunk_{chunk['chunk_in_section']}__{i}")
+        docs.append(chunk["text"])
+        metas.append({
+            "paper_id": paper_id,
+            "source": source,
+            "chunk_index": i,
+            "section": chunk.get("section", ""),
+            "section_index": chunk.get("section_index", 0),
+            "chunk_in_section": chunk.get("chunk_in_section", 0),
+            "is_abstract": chunk.get("is_abstract", False),
+            "is_conclusion": chunk.get("is_conclusion", False),
+            "position_ratio": chunk.get("position_ratio", 0.0),
+        })
+
+    logger.info("Indexing %d structured chunks for paper_id=%r", len(docs), paper_id)
+    if docs:
+        col.upsert(documents=docs, ids=ids, metadatas=metas)
+    logger.info("Structured chunks indexed into %r", collection_name)
+    return {"structured_count": len(docs)}
+
+
+def get_section_chunks(paper_id: str, source: str, section_name: str) -> list[dict]:
+    """Retrieve all chunks from a specific section of a paper."""
+    collection_name = f"{source}_papers_sections"
+    logger.info("Getting section chunks: paper_id=%r section=%r", paper_id, section_name)
+    col = _get_collection(collection_name, cosine=True)
+    results = col.get(where={"paper_id": paper_id, "section": section_name})
+    chunks = []
+    for doc, meta in zip(results.get("documents", []), results.get("metadatas", [])):
+        chunks.append({"text": doc, **meta})
+    chunks.sort(key=lambda c: c.get("chunk_in_section", 0))
+    logger.info("Found %d chunks for section=%r", len(chunks), section_name)
+    return chunks
+
+
 def query_chunks(query: str, paper_id: str, source: str, k: int) -> list[dict]:
     logger.info("Querying collection: query=%r paper_id=%r source=%r k=%d", query, paper_id, source, k)
     collection = _get_collection(f"{source}_papers", cosine=True)

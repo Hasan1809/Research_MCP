@@ -1,6 +1,6 @@
 import json
 import os
-from services.retrieval.vector_store import index_chunks
+from services.retrieval.vector_store import index_chunks, index_structured_chunks
 from utils.logger import get_logger, log_invocation
 
 logger = get_logger(__name__)
@@ -22,16 +22,28 @@ def index_paper_tool(paper_id: str, source: str) -> dict:
     with open(cache_path, encoding="utf-8") as f:
         paper = json.load(f)
 
-    chunks = paper.get("chunks", [])
-
     try:
-        counts = index_chunks(paper_id, source, chunks)
+        # Flat chunks (existing, backward-compatible)
+        flat_chunks = paper.get("chunks", [])
+        flat_counts = index_chunks(paper_id, source, flat_chunks)
+
+        # Structured chunks (new — only present after the refactored ingest)
+        sec_chunks = paper.get("section_chunks")
+        structured_counts = {}
+        if sec_chunks:
+            logger.info("Indexing %d structured chunks", len(sec_chunks))
+            structured_counts = index_structured_chunks(paper_id, source, sec_chunks)
+        else:
+            logger.info("No section_chunks in cache — skipping structured indexing")
+
         result = {
             "paper_id": paper_id,
             "source": source,
-            "chunk_count": len(chunks),
-            "indexed_content_count": counts["content_count"],
-            "indexed_reference_count": counts["reference_count"],
+            "chunk_count": len(flat_chunks),
+            "indexed_content_count": flat_counts["content_count"],
+            "indexed_reference_count": flat_counts["reference_count"],
+            "structured_chunk_count": len(sec_chunks) if sec_chunks else 0,
+            **structured_counts,
         }
         log_invocation("index_paper_tool", arguments, output=result)
         return result
