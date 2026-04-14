@@ -1,4 +1,4 @@
-from services.documents.pdf_service import download_and_extract_text
+from services.documents.pdf_service import download_and_extract_text, load_cached, save_cached
 from services.documents.chunking import chunk_text
 from utils.logger import get_logger, log_invocation
 
@@ -13,6 +13,12 @@ def ingest_paper_tool(paper_id: str, source: str) -> dict:
         error = f"Unsupported source: {source}. Only 'arxiv' is supported."
         log_invocation("ingest_paper_tool", arguments, error=error)
         raise ValueError(error)
+
+    cached = load_cached(source, paper_id)
+    if cached is not None:
+        logger.info("Returning cached result for paper_id=%r", paper_id)
+        log_invocation("ingest_paper_tool", arguments, output={**cached, "from_cache": True})
+        return cached
 
     pdf_url = f"https://arxiv.org/pdf/{paper_id}"
 
@@ -29,6 +35,7 @@ def ingest_paper_tool(paper_id: str, source: str) -> dict:
             "chunk_count": len(chunks),
             "chunks": chunks,
         }
+        save_cached(source, paper_id, result)
         log_invocation("ingest_paper_tool", arguments, output={
             "paper_id": paper_id,
             "source": source,

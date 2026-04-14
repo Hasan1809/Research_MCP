@@ -25,7 +25,7 @@ Thumbs.db
 *.log
 
 # Data / cache (important for your project)
-data/cache/
+data/
 
 # Test artifacts
 .pytest_cache/

@@ -1,5 +1,8 @@
 import re
 from collections import Counter
+from utils.logger import get_logger
+
+logger = get_logger(__name__)
 
 _STOPWORDS = {
     "a", "an", "the", "of", "in", "on", "at", "to", "for", "and", "or",
@@ -58,4 +61,48 @@ def analyze_papers(papers: list[dict]) -> dict:
         "common_topics": common_topics,
         "limitations": limitations,
         "possible_gaps": possible_gaps,
+    }
+
+
+def _most_common_items(lists: list[list[str]], threshold: int) -> list[str]:
+    """Return items that appear in at least `threshold` of the provided lists."""
+    counts: Counter = Counter()
+    for items in lists:
+        for item in set(item.lower().strip() for item in items):
+            counts[item] += 1
+    return [item for item, count in counts.most_common() if count >= threshold]
+
+
+def synthesize_insights(insights: list[dict]) -> dict:
+    n = len(insights)
+    min_overlap = max(2, n // 2)  # item must appear in at least half the papers (min 2)
+
+    methods_lists   = [i.get("methods", []) for i in insights]
+    datasets_lists  = [i.get("datasets", []) for i in insights]
+    limits_lists    = [i.get("limitations", []) for i in insights]
+    results_lists   = [i.get("results", []) for i in insights]
+
+    common_methods      = _most_common_items(methods_lists, min_overlap)
+    common_datasets     = _most_common_items(datasets_lists, min_overlap)
+    recurring_limitations = _most_common_items(limits_lists, min_overlap)
+    common_findings     = _most_common_items(results_lists, min_overlap)
+
+    # Notable differences: items unique to a single paper
+    all_methods = [item.lower().strip() for lst in methods_lists for item in lst]
+    method_counts = Counter(all_methods)
+    notable_differences = [item for item, count in method_counts.items() if count == 1][:5]
+
+    logger.info(
+        "Synthesis over %d papers: common_methods=%d common_datasets=%d "
+        "recurring_limitations=%d common_findings=%d notable_differences=%d",
+        n, len(common_methods), len(common_datasets),
+        len(recurring_limitations), len(common_findings), len(notable_differences),
+    )
+
+    return {
+        "common_methods": common_methods,
+        "common_datasets": common_datasets,
+        "recurring_limitations": recurring_limitations,
+        "common_findings": common_findings,
+        "notable_differences": notable_differences,
     }

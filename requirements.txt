@@ -3,3 +3,4 @@ httpx
 pydantic
 python-dotenv
 pypdf
+chromadb

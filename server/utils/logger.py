@@ -4,34 +4,32 @@ import os
 from datetime import datetime
 
 _initialized = False
-_invocation_dir: str = ""
+_tools_dir: str = ""
 _invocation_counter: int = 0
 
 
 def init_logging():
-    global _initialized, _invocation_dir
+    global _initialized, _tools_dir
     if _initialized:
         return
     _initialized = True
 
     logs_dir = os.path.join(os.path.dirname(__file__), "..", "..", "logs")
-    os.makedirs(logs_dir, exist_ok=True)
-
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    log_file = os.path.join(logs_dir, f"session_{timestamp}.log")
+    session_dir = os.path.join(logs_dir, f"session_{timestamp}")
+    _tools_dir = os.path.join(session_dir, "tools")
+    os.makedirs(_tools_dir, exist_ok=True)
 
+    log_file = os.path.join(session_dir, "main.log")
     fmt = "%(asctime)s %(levelname)s %(name)s: %(message)s"
     logging.basicConfig(
-        level=logging.INFO,
+        level=logging.DEBUG,
         format=fmt,
         handlers=[
             logging.FileHandler(log_file),
             logging.StreamHandler(),
         ],
     )
-
-    _invocation_dir = os.path.join(logs_dir, "tool_invocations", f"session_{timestamp}")
-    os.makedirs(_invocation_dir, exist_ok=True)
 
 
 def get_logger(name: str) -> logging.Logger:
@@ -42,7 +40,7 @@ def log_invocation(tool_name: str, arguments: dict, output=None, error: str | No
     global _invocation_counter
     _invocation_counter += 1
     filename = f"{_invocation_counter:03d}_{tool_name}.json"
-    path = os.path.join(_invocation_dir, filename)
+    path = os.path.join(_tools_dir, filename)
     record = {
         "timestamp": datetime.now().isoformat(),
         "tool_name": tool_name,
