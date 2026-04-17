@@ -1,6 +1,7 @@
 import json
 import os
 from services.analysis.synthesis import synthesize_insights
+from services.project_manager import get_project_papers
 from utils.logger import get_logger, log_invocation
 
 logger = get_logger(__name__)
@@ -26,9 +27,26 @@ def _profile_to_insights(profile: dict) -> dict:
     }
 
 
-def synthesize_papers_tool(papers: list[dict]) -> dict:
-    logger.info("Tool invoked: synthesize_papers count=%d", len(papers))
-    arguments = {"papers": papers}
+def synthesize_papers_tool(papers: list[dict] = None, project: str = None) -> dict:
+    """
+    Synthesize insights across multiple papers.
+
+    Can be called two ways:
+    - papers=[{"paper_id": ..., "source": ...}, ...] — explicit list
+    - project="moe-efficiency" — use all papers from the named project
+
+    If both are provided, project takes precedence.
+    Each paper must have a profile or insights file already.
+    """
+    if project:
+        papers = get_project_papers(project)
+        logger.info("Tool invoked: synthesize_papers project=%r count=%d", project, len(papers))
+    elif papers:
+        logger.info("Tool invoked: synthesize_papers count=%d", len(papers))
+    else:
+        raise ValueError("synthesize_papers_tool requires either 'papers' or 'project'.")
+
+    arguments = {"papers": papers, "project": project}
 
     insights = []
     for ref in papers:

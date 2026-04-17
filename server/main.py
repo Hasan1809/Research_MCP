@@ -11,6 +11,9 @@ from tools.index_paper import index_paper_tool
 from tools.retrieve_chunks import retrieve_chunks_tool
 from tools.synthesize_papers import synthesize_papers_tool
 from tools.build_paper_profile import build_paper_profile_tool
+from tools.detect_gaps import detect_gaps_tool
+from tools.manage_project import create_project_tool, add_to_project_tool, list_projects_tool
+from tools.suggest_experiments import suggest_experiments_tool
 
 init_logging()
 logger = get_logger(__name__)
@@ -25,6 +28,11 @@ mcp.tool()(index_paper_tool)
 mcp.tool()(retrieve_chunks_tool)
 mcp.tool()(synthesize_papers_tool)
 mcp.tool()(build_paper_profile_tool)
+mcp.tool()(detect_gaps_tool)
+mcp.tool()(create_project_tool)
+mcp.tool()(add_to_project_tool)
+mcp.tool()(list_projects_tool)
+mcp.tool()(suggest_experiments_tool)
 
 if __name__ == "__main__":
     logger.info("Starting research-agent MCP server")

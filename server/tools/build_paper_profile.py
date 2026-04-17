@@ -20,6 +20,11 @@ _PROFILE_QUERIES = [
 _CANDIDATE_K = 6
 _MAX_TOTAL_CHUNKS = 15
 
+_PRIORITY_SECTION_KEYWORDS = {
+    "abstract", "introduction", "conclusion", "conclusions",
+    "discussion", "method", "methods", "approach", "related work",
+}
+
 
 def _get_full_text(cached: dict) -> str:
     """Reconstruct coherent paper text from cached data, preserving section headings."""
@@ -68,7 +73,10 @@ def build_paper_profile_tool(paper_id: str, source: str) -> dict:
         raise FileNotFoundError(error)
 
     full_text = _get_full_text(cached)
-    path_used = "full_text" if len(full_text) <= MAX_FULL_TEXT_CHARS else "chunk_retrieval"
+    path_used = (
+        "full_text" if len(full_text) <= MAX_FULL_TEXT_CHARS
+        else "priority_sections_or_chunk_retrieval"
+    )
 
     if len(full_text) <= MAX_FULL_TEXT_CHARS:
         logger.info(
@@ -78,22 +86,49 @@ def build_paper_profile_tool(paper_id: str, source: str) -> dict:
         chunk_indices = []
     else:
         logger.info(
-            "Full text too large (%d chars > %d limit) — falling back to chunk retrieval",
+            "Full text too large (%d chars > %d limit) — trying priority-sections fallback",
             len(full_text), MAX_FULL_TEXT_CHARS,
         )
-        chunks = _retrieve_profile_chunks(paper_id, source)
-        if not chunks:
-            error = "No indexed chunks found. Run index_paper_tool first."
-            log_invocation("build_paper_profile_tool", arguments, error=error)
-            raise ValueError(error)
-        chunk_indices = [c["chunk_index"] for c in chunks]
-        early = [i for i in chunk_indices if i <= 3]
-        late  = [i for i in chunk_indices if i >= max(chunk_indices) - 3]
-        logger.info(
-            "Retrieved %d chunks: indices=%s (early=%s late=%s)",
-            len(chunks), chunk_indices, early, late,
+        # ── Smarter fallback: join priority sections in document order ──────
+        sections = cached.get("sections", [])
+        priority_sections = [
+            sec for sec in sections
+            if any(kw in sec.get("heading", "").lower() for kw in _PRIORITY_SECTION_KEYWORDS)
+        ]
+        priority_text = "\n\n".join(
+            f"## {sec['heading']}\n\n{sec['text'].strip()}"
+            for sec in priority_sections
+            if sec.get("text", "").strip()
         )
-        context_text = "\n\n".join(c["text"] for c in chunks)
+        if priority_text and len(priority_text) <= MAX_FULL_TEXT_CHARS:
+            logger.info(
+                "Priority-sections fallback: %d sections, %d chars",
+                len(priority_sections), len(priority_text),
+            )
+            context_text = priority_text
+            chunk_indices = []
+        else:
+            # ── Last resort: chunk retrieval ─────────────────────────────────
+            if priority_text:
+                logger.info(
+                    "Priority sections still too large (%d chars) — falling back to chunk retrieval",
+                    len(priority_text),
+                )
+            else:
+                logger.info("No priority sections found — falling back to chunk retrieval")
+            chunks = _retrieve_profile_chunks(paper_id, source)
+            if not chunks:
+                error = "No indexed chunks found. Run index_paper_tool first."
+                log_invocation("build_paper_profile_tool", arguments, error=error)
+                raise ValueError(error)
+            chunk_indices = [c["chunk_index"] for c in chunks]
+            early = [i for i in chunk_indices if i <= 3]
+            late  = [i for i in chunk_indices if i >= max(chunk_indices) - 3]
+            logger.info(
+                "Retrieved %d chunks: indices=%s (early=%s late=%s)",
+                len(chunks), chunk_indices, early, late,
+            )
+            context_text = "\n\n".join(c["text"] for c in chunks)
 
     logger.info("Generating paper profile (path=%s)...", path_used)
     try:
