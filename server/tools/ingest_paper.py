@@ -9,6 +9,13 @@ logger = get_logger(__name__)
 
 
 def ingest_paper_tool(paper_id: str, source: str) -> dict:
+    """
+    Download and process a paper PDF. Only supports source='arxiv'.
+
+    Downloads the PDF, extracts text, detects sections, and creates chunks.
+    Caches the result so subsequent calls are instant.
+    Must be called before index_paper_tool or build_paper_profile_tool.
+    """
     logger.info("Tool invoked: ingest_paper paper_id=%r source=%r", paper_id, source)
     arguments = {"paper_id": paper_id, "source": source}
 

@@ -1,7 +1,9 @@
 import json
 import os
+import time
 import httpx
 from utils.logger import get_logger
+from utils.usage_tracker import log_usage
 
 logger = get_logger(__name__)
 
@@ -146,6 +148,7 @@ def extract_field(field: str, text: str) -> tuple[list, str]:
     }
     logger.info("Calling IONOS LLM (field=%r): model=%s text_chars=%d", field, model, len(text))
 
+    _start = time.time()
     response = httpx.post(
         f"{base_url}/chat/completions",
         headers={"Authorization": f"Bearer {api_token}", "Content-Type": "application/json"},
@@ -155,8 +158,20 @@ def extract_field(field: str, text: str) -> tuple[list, str]:
     if response.is_error:
         logger.error("IONOS API error (field=%r): status=%d body=%s", field, response.status_code, response.text)
     response.raise_for_status()
+    _latency = time.time() - _start
+    _resp = response.json()
+    _usage = _resp.get("usage", {})
+    log_usage(
+        tool_name="extract_field",
+        model=model,
+        input_tokens=_usage.get("prompt_tokens", 0),
+        output_tokens=_usage.get("completion_tokens", 0),
+        total_tokens=_usage.get("total_tokens", 0),
+        latency_seconds=_latency,
+        input_chars=len(text),
+    )
 
-    raw = response.json()["choices"][0]["message"]["content"].strip()
+    raw = _resp["choices"][0]["message"]["content"].strip()
     logger.info("LLM response (field=%r): %d chars", field, len(raw))
     logger.debug("Raw completion (field=%r): %s", field, raw)
 
@@ -185,6 +200,7 @@ def extract_insights(text: str) -> tuple[dict, str]:
     logger.info("Calling IONOS LLM: model=%s text_chars=%d url=%s", model, len(text), f"{base_url}/chat/completions")
     logger.debug("Request payload: %s", json.dumps({**payload, "messages": [{"role": m["role"], "content": m["content"][:200]} for m in payload["messages"]]}, indent=2))
 
+    _start = time.time()
     response = httpx.post(
         f"{base_url}/chat/completions",
         headers={
@@ -197,8 +213,20 @@ def extract_insights(text: str) -> tuple[dict, str]:
     if response.is_error:
         logger.error("IONOS API error: status=%d body=%s", response.status_code, response.text)
     response.raise_for_status()
+    _latency = time.time() - _start
+    _resp = response.json()
+    _usage = _resp.get("usage", {})
+    log_usage(
+        tool_name="extract_insights",
+        model=model,
+        input_tokens=_usage.get("prompt_tokens", 0),
+        output_tokens=_usage.get("completion_tokens", 0),
+        total_tokens=_usage.get("total_tokens", 0),
+        latency_seconds=_latency,
+        input_chars=len(text),
+    )
 
-    raw_completion = response.json()["choices"][0]["message"]["content"].strip()
+    raw_completion = _resp["choices"][0]["message"]["content"].strip()
     logger.info("LLM response received: %d chars", len(raw_completion))
     logger.debug("Raw model completion: %s", raw_completion)
 
@@ -298,6 +326,7 @@ def build_profile(text: str) -> tuple[dict, str]:
     }
     logger.info("Building paper profile: model=%s text_chars=%d", model, len(text))
 
+    _start = time.time()
     response = httpx.post(
         f"{base_url}/chat/completions",
         headers={"Authorization": f"Bearer {api_token}", "Content-Type": "application/json"},
@@ -307,8 +336,20 @@ def build_profile(text: str) -> tuple[dict, str]:
     if response.is_error:
         logger.error("IONOS API error (profile): status=%d body=%s", response.status_code, response.text)
     response.raise_for_status()
+    _latency = time.time() - _start
+    _resp = response.json()
+    _usage = _resp.get("usage", {})
+    log_usage(
+        tool_name="build_profile",
+        model=model,
+        input_tokens=_usage.get("prompt_tokens", 0),
+        output_tokens=_usage.get("completion_tokens", 0),
+        total_tokens=_usage.get("total_tokens", 0),
+        latency_seconds=_latency,
+        input_chars=len(text),
+    )
 
-    raw = response.json()["choices"][0]["message"]["content"].strip()
+    raw = _resp["choices"][0]["message"]["content"].strip()
     logger.info("Profile LLM response: %d chars", len(raw))
     logger.debug("Raw profile completion: %s", raw)
 

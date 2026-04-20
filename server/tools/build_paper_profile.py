@@ -9,7 +9,7 @@ logger = get_logger(__name__)
 
 _PROFILES_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "data", "profiles")
 
-MAX_FULL_TEXT_CHARS = int(os.environ.get("FULL_TEXT_CHAR_LIMIT", 80_000))
+MAX_FULL_TEXT_CHARS = int(os.environ.get("FULL_TEXT_CHAR_LIMIT", 160_000))
 
 # Fallback retrieval queries (used only when full text exceeds limit)
 _PROFILE_QUERIES = [
@@ -62,9 +62,35 @@ def _retrieve_profile_chunks(paper_id: str, source: str) -> list[dict]:
     return chunks
 
 
-def build_paper_profile_tool(paper_id: str, source: str) -> dict:
+def build_paper_profile_tool(paper_id: str, source: str, force: bool = False) -> dict:
+    """
+    Generate a comprehensive profile of a paper using LLM analysis.
+
+    Extracts: paper_type, research_problem, main_contribution,
+    methods_or_approach, key_findings, core_insight, paper_stance,
+    distinctive_elements, datasets, limitations, future_work, and
+    a plain_english_summary.
+
+    Must be called after ingest_paper_tool.
+    For papers over 80k characters, index_paper_tool must also be called
+    first, otherwise the profile will have limited context.
+    Required before detect_gaps_tool or suggest_experiments_tool.
+    Set force=True to re-profile even if a cached profile exists.
+    """
     logger.info("Tool invoked: build_paper_profile paper_id=%r source=%r", paper_id, source)
     arguments = {"paper_id": paper_id, "source": source}
+
+    if not force:
+        profile_path = os.path.join(_PROFILES_DIR, source, f"{paper_id}.json")
+        if os.path.exists(profile_path):
+            logger.info("Profile already exists for %r — returning cached", paper_id)
+            with open(profile_path, encoding="utf-8") as f:
+                cached_profile = json.load(f)
+            log_invocation("build_paper_profile_tool", arguments, output={
+                "path_used": "cached_profile",
+                "profile": cached_profile,
+            })
+            return cached_profile
 
     cached = load_cached(source, paper_id)
     if not cached:
@@ -106,6 +132,13 @@ def build_paper_profile_tool(paper_id: str, source: str) -> dict:
                 len(priority_sections), len(priority_text),
             )
             context_text = priority_text
+            if len(context_text) < 5000:
+                logger.warning(
+                    "Priority sections too short (%d chars) — using truncated full text",
+                    len(context_text),
+                )
+                context_text = full_text[:MAX_FULL_TEXT_CHARS]
+                path_used = "truncated_full_text"
             chunk_indices = []
         else:
             # ── Last resort: chunk retrieval ─────────────────────────────────

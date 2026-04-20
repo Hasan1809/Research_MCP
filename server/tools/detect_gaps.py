@@ -33,19 +33,13 @@ def _load_paper_data(paper_id: str, source: str) -> dict:
 
 def detect_gaps_tool(papers: list[dict] = None, project: str = None) -> dict:
     """
-    Detect research gaps across multiple papers.
+    Identify research gaps across multiple profiled papers.
 
-    Can be called two ways:
-    - papers=[{"paper_id": ..., "source": ...}, ...] — explicit list
-    - project="moe-efficiency" — use all papers from the named project
+    Call with project="name" to use all papers in a project, or pass
+    an explicit papers list. Each paper must have been profiled first.
 
-    If both are provided, project takes precedence.
-    Each paper must have been profiled already
-    (build_paper_profile_tool must have been run on each).
-
-    Returns:
-        Gap analysis result dict with research_gaps, methodological_gaps,
-        contradictions, connections, and field_summary.
+    Returns: research_gaps, methodological_gaps, contradictions,
+    connections, and field_summary.
     """
     if project:
         papers = get_project_papers(project)

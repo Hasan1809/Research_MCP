@@ -31,6 +31,13 @@ def init_logging():
         ],
     )
 
+    # Suppress noisy third-party debug logs
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("chromadb").setLevel(logging.WARNING)
+    logging.getLogger("asyncio").setLevel(logging.WARNING)
+    logging.getLogger("mcp.server.lowlevel.server").setLevel(logging.INFO)
+
 
 def get_logger(name: str) -> logging.Logger:
     return logging.getLogger(name)

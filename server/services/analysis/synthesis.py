@@ -1,10 +1,12 @@
 import json
 import os
 import re
+import time
 import httpx
 from collections import Counter
 from services.extraction.llm_extractor import _strip_code_fences
 from utils.logger import get_logger
+from utils.usage_tracker import log_usage
 
 logger = get_logger(__name__)
 
@@ -144,6 +146,7 @@ def analyze_papers(papers: list[dict]) -> dict:
     logger.info("Analyzing %d papers with LLM: model=%s", len(papers), model)
 
     try:
+        _start = time.time()
         response = httpx.post(
             f"{base_url}/chat/completions",
             headers={"Authorization": f"Bearer {api_token}", "Content-Type": "application/json"},
@@ -160,7 +163,20 @@ def analyze_papers(papers: list[dict]) -> dict:
         logger.warning("LLM analysis failed (%s) — using fallback", e)
         return _analyze_papers_fallback(papers)
 
-    raw = response.json()["choices"][0]["message"]["content"].strip()
+    _latency = time.time() - _start
+    _resp = response.json()
+    _usage = _resp.get("usage", {})
+    log_usage(
+        tool_name="analyze_papers",
+        model=model,
+        input_tokens=_usage.get("prompt_tokens", 0),
+        output_tokens=_usage.get("completion_tokens", 0),
+        total_tokens=_usage.get("total_tokens", 0),
+        latency_seconds=_latency,
+        input_chars=len(papers_text),
+    )
+
+    raw = _resp["choices"][0]["message"]["content"].strip()
     logger.info("LLM analysis response: %d chars", len(raw))
 
     try:

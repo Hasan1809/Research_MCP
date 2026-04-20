@@ -11,9 +11,11 @@ to the LLM to identify:
 """
 import json
 import os
+import time
 import httpx
 from services.extraction.llm_extractor import _strip_code_fences
 from utils.logger import get_logger
+from utils.usage_tracker import log_usage
 
 logger = get_logger(__name__)
 
@@ -157,6 +159,7 @@ def detect_gaps(paper_profiles: list[dict]) -> tuple[dict, str]:
         "response_format": {"type": "json_object"},
     }
 
+    _start = time.time()
     response = httpx.post(
         f"{base_url}/chat/completions",
         headers={"Authorization": f"Bearer {api_token}", "Content-Type": "application/json"},
@@ -167,8 +170,20 @@ def detect_gaps(paper_profiles: list[dict]) -> tuple[dict, str]:
         logger.error("IONOS API error (gap_detection): status=%d body=%s",
                      response.status_code, response.text)
     response.raise_for_status()
+    _latency = time.time() - _start
+    _resp = response.json()
+    _usage = _resp.get("usage", {})
+    log_usage(
+        tool_name="detect_gaps",
+        model=model,
+        input_tokens=_usage.get("prompt_tokens", 0),
+        output_tokens=_usage.get("completion_tokens", 0),
+        total_tokens=_usage.get("total_tokens", 0),
+        latency_seconds=_latency,
+        input_chars=len(user_message),
+    )
 
-    raw = response.json()["choices"][0]["message"]["content"].strip()
+    raw = _resp["choices"][0]["message"]["content"].strip()
     logger.info("Gap detection LLM response: %d chars", len(raw))
     logger.debug("Raw gap detection completion: %s", raw)
 

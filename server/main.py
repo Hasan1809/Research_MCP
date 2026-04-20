@@ -14,6 +14,7 @@ from tools.build_paper_profile import build_paper_profile_tool
 from tools.detect_gaps import detect_gaps_tool
 from tools.manage_project import create_project_tool, add_to_project_tool, list_projects_tool
 from tools.suggest_experiments import suggest_experiments_tool
+from tools.usage_summary import usage_summary_tool
 
 init_logging()
 logger = get_logger(__name__)
@@ -33,6 +34,10 @@ mcp.tool()(create_project_tool)
 mcp.tool()(add_to_project_tool)
 mcp.tool()(list_projects_tool)
 mcp.tool()(suggest_experiments_tool)
+mcp.tool()(usage_summary_tool)
+
+from prompts import register_prompts
+register_prompts(mcp)
 
 if __name__ == "__main__":
     logger.info("Starting research-agent MCP server")

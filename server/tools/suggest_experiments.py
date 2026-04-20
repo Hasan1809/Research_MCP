@@ -15,22 +15,17 @@ _ANALYSIS_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "data", "ana
 def suggest_experiments_tool(
     papers: list[dict] = None,
     project: str = None,
+    gap_analysis: dict = None,
 ) -> dict:
     """
-    Suggest concrete experiments based on gap analysis across papers.
+    Suggest concrete experiments based on research gaps across papers.
 
-    Can be called two ways:
-    - papers=[{"paper_id": ..., "source": ...}, ...] — explicit list
-    - project="moe-efficiency" — use all papers from the named project
+    Runs gap detection internally, then generates 3-5 experiment
+    proposals with hypotheses, methods, baselines, and feasibility.
 
-    If both are provided, project takes precedence.
-    Each paper must have been profiled (build_paper_profile_tool) first.
-    Runs gap detection internally, then generates experiment proposals.
-
-    Returns:
-        Dict with "gaps" (full gap analysis) and "experiments" (list of
-        proposals with title, hypothesis, method, baselines, datasets,
-        expected_outcome, feasibility, builds_on).
+    Call with project="name" to use all papers in a project.
+    Each paper must have been profiled first.
+    Pass gap_analysis to skip the internal gap detection step (saves ~15s).
     """
     if project:
         from services.project_manager import get_project_papers
@@ -62,13 +57,16 @@ def suggest_experiments_tool(
         with open(profile_path, encoding="utf-8") as f:
             profiles.append(json.load(f))
 
-    # Run gap detection
-    logger.info("Running gap detection for %d papers...", len(profiles))
-    try:
-        gap_analysis, _ = detect_gaps(profiles)
-    except Exception as e:
-        log_invocation("suggest_experiments_tool", arguments, error=str(e))
-        raise
+    # Run gap detection (or use provided analysis)
+    if gap_analysis is None:
+        logger.info("Running gap detection for %d papers...", len(profiles))
+        try:
+            gap_analysis, _ = detect_gaps(profiles)
+        except Exception as e:
+            log_invocation("suggest_experiments_tool", arguments, error=str(e))
+            raise
+    else:
+        logger.info("Using provided gap analysis (skipping detection)")
 
     # Generate experiment suggestions
     logger.info("Generating experiment suggestions...")

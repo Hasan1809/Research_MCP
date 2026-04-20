@@ -9,6 +9,14 @@ _DATA_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "data", "papers"
 
 
 def index_paper_tool(paper_id: str, source: str) -> dict:
+    """
+    Index a paper's chunks into the vector database for semantic search.
+
+    Must be called after ingest_paper_tool.
+    Required before retrieve_chunks_tool can be used on this paper.
+    Optional if you only need build_paper_profile_tool (profiling works
+    without indexing for papers under 80k chars).
+    """
     logger.info("Tool invoked: index_paper paper_id=%r source=%r", paper_id, source)
     arguments = {"paper_id": paper_id, "source": source}
 
