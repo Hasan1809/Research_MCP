@@ -165,7 +165,7 @@ def build_paper_profile_tool(paper_id: str, source: str, force: bool = False) ->
 
     logger.info("Generating paper profile (path=%s)...", path_used)
     try:
-        profile, raw = build_profile(context_text)
+        profile, raw = build_profile(context_text, paper_id=paper_id)
     except Exception as e:
         log_invocation("build_paper_profile_tool", arguments, error=str(e))
         raise

@@ -1,13 +1,16 @@
 import json
 import os
 from datetime import datetime
-from utils.logger import get_logger
+from utils.logger import get_logger, get_session_dir
 
 logger = get_logger(__name__)
 
-_USAGE_LOG_PATH = os.path.join(
-    os.path.dirname(__file__), "..", "..", "logs", "usage.log"
-)
+
+def _normalize_tool_name(tool_name: str) -> str:
+    prefix = os.environ.get("USAGE_TOOL_PREFIX", "").strip()
+    if prefix and not tool_name.startswith(prefix):
+        return f"{prefix}{tool_name}"
+    return tool_name
 
 # IONOS pricing per 1M tokens — https://cloud.ionos.com/ai/ai-model-hub
 _PRICING = {
@@ -33,6 +36,8 @@ def log_usage(
     input_chars: int = 0,
     paper_id: str = "",
 ):
+    normalized_tool_name = _normalize_tool_name(tool_name)
+    usage_log_path = os.path.join(get_session_dir(), "usage.log")
     pricing = _PRICING.get(model, _DEFAULT_PRICING)
     input_cost = (input_tokens / 1_000_000) * pricing["input"]
     output_cost = (output_tokens / 1_000_000) * pricing["output"]
@@ -40,7 +45,7 @@ def log_usage(
 
     record = {
         "timestamp": datetime.now().isoformat(),
-        "tool": tool_name,
+        "tool": normalized_tool_name,
         "model": model,
         "input_tokens": input_tokens,
         "output_tokens": output_tokens,
@@ -51,24 +56,26 @@ def log_usage(
         "paper_id": paper_id,
     }
 
-    os.makedirs(os.path.dirname(_USAGE_LOG_PATH), exist_ok=True)
-    with open(_USAGE_LOG_PATH, "a", encoding="utf-8") as f:
+    os.makedirs(os.path.dirname(usage_log_path), exist_ok=True)
+    with open(usage_log_path, "a", encoding="utf-8") as f:
         f.write(json.dumps(record) + "\n")
 
     logger.info(
         "USAGE | tool=%s model=%s in=%d out=%d total=%d latency=%.1fs cost=$%.4f",
-        tool_name, model.split("/")[-1],
+        normalized_tool_name, model.split("/")[-1],
         input_tokens, output_tokens, total_tokens,
         latency_seconds, total_cost,
     )
 
 
 def get_usage_summary() -> dict:
-    if not os.path.exists(_USAGE_LOG_PATH):
+    usage_log_path = os.path.join(get_session_dir(), "usage.log")
+
+    if not os.path.exists(usage_log_path):
         return {"total_calls": 0, "total_tokens": 0, "total_cost_usd": 0}
 
     records = []
-    with open(_USAGE_LOG_PATH, encoding="utf-8") as f:
+    with open(usage_log_path, encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if line:

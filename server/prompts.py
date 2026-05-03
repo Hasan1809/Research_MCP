@@ -2,131 +2,109 @@ from mcp.server.fastmcp import FastMCP
 
 
 def register_prompts(mcp: FastMCP):
-    """Register MCP prompts for common research workflows."""
-
     @mcp.prompt()
     def research_topic(topic: str, num_papers: int = 3) -> str:
         """
-        Complete research workflow: search papers on a topic, ingest and
-        profile the most relevant ones, detect gaps, and suggest experiments.
+        Complete research workflow: search, ingest, profile, detect gaps,
+        suggest experiments.
         """
-        return f"""You are a research assistant. Execute this workflow for the topic: "{topic}"
+        return f"""Execute this research workflow for: "{topic}"
 
-STEP 1: Create a project called "{topic.lower().replace(' ', '-')[:30]}"
-- Use create_project_tool
+STEPS (execute silently, do not narrate each step):
+1. search_papers_tool(query="{topic}", limit={num_papers + 2})
+2. Pick the {num_papers} most relevant arxiv papers
+3. For each: ingest_paper_tool → build_paper_profile_tool
+4. detect_gaps_tool(papers=[...])
+5. suggest_experiments_tool(papers=[...])
 
-STEP 2: Search for {num_papers + 2} papers on "{topic}"
-- Use search_papers_tool with limit={num_papers + 2}
-- From the results, pick the {num_papers} most relevant papers that are
-  actually about {topic} (skip unrelated results)
-- Only use papers with source="arxiv" (other sources can't be ingested)
+OUTPUT FORMAT (use this EXACTLY):
 
-STEP 3: For each selected paper, run this sequence:
-- ingest_paper_tool(paper_id=..., source="arxiv")
-- index_paper_tool(paper_id=..., source="arxiv")
-- build_paper_profile_tool(paper_id=..., source="arxiv")
-- add_to_project_tool(name="...", paper_id=..., source="arxiv")
-
-STEP 4: Run gap detection
-- detect_gaps_tool(project="...")
-
-STEP 5: Run experiment suggestions
-- suggest_experiments_tool(project="...")
-
-FORMAT YOUR FINAL RESPONSE AS:
-
+---
 ## Research Analysis: {topic}
 
 ### Papers Analyzed
-For each paper, show:
-- **Title**: [paper title]
-- **ID**: [paper_id]
-- **Core contribution**: [1 sentence from the profile]
+| # | Title | ID | Type | Core Contribution |
+|---|-------|-----|------|-------------------|
+| 1 | ... | ... | ... | 1 sentence |
 
 ### Research Gaps
-For each gap, show:
-- Gap description
-- Which papers relate to this gap
+| Gap | Type | Evidence | Papers |
+|-----|------|----------|--------|
+| ... | research/methodological | ... | IDs |
+
+### Contradictions
+| Finding A | Finding B | Papers | Nature |
+|-----------|-----------|--------|--------|
 
 ### Suggested Experiments
-For each experiment, show:
-- **Title**: experiment title
-- **Feasibility**: high/medium/low
-- **What it tests**: the hypothesis
-- **How**: 1-2 sentence method summary
+| # | Title | Addresses | Feasibility | Method (1 sentence) |
+|---|-------|-----------|-------------|---------------------|
+
+### Connections
+- [1 sentence per connection]
 
 ### Field Summary
-[The field_summary from gap detection]
+[2-3 sentences from gap detection field_summary]
+---
 
-Keep the response concise. Do not repeat raw JSON output."""
+RULES:
+- Do NOT add commentary before or after the tables
+- Do NOT explain what each tool does
+- Do NOT show raw JSON
+- Keep table cells to 1 sentence max
+- Total response must be under 800 words"""
 
     @mcp.prompt()
     def analyze_paper(paper_id: str, source: str = "arxiv") -> str:
-        """
-        Deep analysis of a single paper: ingest, index, profile, and
-        extract insights.
-        """
+        """Deep analysis of a single paper."""
         return f"""Analyze paper {paper_id} from {source}:
 
-1. ingest_paper_tool(paper_id="{paper_id}", source="{source}")
-2. index_paper_tool(paper_id="{paper_id}", source="{source}")
-3. build_paper_profile_tool(paper_id="{paper_id}", source="{source}")
-4. extract_paper_insights_tool(paper_id="{paper_id}", source="{source}")
+STEPS: ingest_paper_tool → build_paper_profile_tool
 
-FORMAT YOUR RESPONSE AS:
+OUTPUT FORMAT (use EXACTLY):
 
-## Paper Analysis: [title from profile]
+---
+## {paper_id}
 
-**Type**: [paper_type]
-**Problem**: [research_problem - 2 sentences max]
-**Contribution**: [main_contribution - 2 sentences max]
-**Core Insight**: [core_insight]
+| Field | Value |
+|-------|-------|
+| Type | [paper_type] |
+| Problem | [1-2 sentences] |
+| Contribution | [1-2 sentences] |
+| Methods | [1-2 sentences] |
+| Key Findings | [1-2 sentences] |
+| Core Insight | [1 sentence] |
+| Datasets | [comma-separated list] |
+| Limitations | [comma-separated list] |
+| Future Work | [comma-separated list] |
 
-### Methods
-[methods_or_approach - summarized]
+**Summary**: [plain_english_summary]
+---
 
-### Key Findings
-[key_findings]
-
-### Extracted Details
-- **Datasets**: [list]
-- **Limitations**: [list]
-- **Future Work**: [list]
-
-Keep it concise."""
+Do NOT add commentary. Do NOT show JSON."""
 
     @mcp.prompt()
     def compare_papers(project: str) -> str:
-        """
-        Compare all papers in a project: synthesize findings, detect gaps,
-        and suggest experiments.
-        """
-        return f"""Compare the papers in project "{project}":
+        """Compare all papers in a project."""
+        return f"""Compare papers in project "{project}":
 
-1. synthesize_papers_tool(project="{project}")
-2. detect_gaps_tool(project="{project}")
-3. suggest_experiments_tool(project="{project}")
+STEPS: detect_gaps_tool(project="{project}") → suggest_experiments_tool(project="{project}")
 
-FORMAT YOUR RESPONSE AS:
+OUTPUT FORMAT (use EXACTLY):
 
-## Comparative Analysis: {project}
+---
+## Comparison: {project}
 
-### Common Methods
-[from synthesis]
+### Gaps
+| Gap | Type | Evidence |
+|-----|------|----------|
 
-### Common Findings
-[from synthesis]
-
-### Key Differences
-[notable_differences from synthesis]
-
-### Research Gaps
-[from gap detection - brief list]
-
-### Suggested Experiments
-[from experiment suggestions - title + feasibility + 1 sentence each]
+### Experiments
+| # | Title | Feasibility | Method |
+|---|-------|-------------|--------|
 
 ### Field Summary
-[field_summary]
+[2-3 sentences]
+---
 
-Keep it concise and professional."""
+Do NOT add commentary."""

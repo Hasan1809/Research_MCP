@@ -3,6 +3,7 @@ import json
 import os
 import re
 import httpx
+from typing import List, Optional
 from pypdf import PdfReader
 from utils.logger import get_logger
 
@@ -58,7 +59,7 @@ def _heading_level(heading: str) -> int:
 
 def detect_sections_from_text(
     text: str,
-    pages_text: list[str] | None = None,
+    pages_text: Optional[List[str]] = None,
 ) -> dict:
     """
     Detect sections from already-extracted text.
@@ -156,7 +157,7 @@ def _extract_abstract(sections: list[dict]) -> str:
 # Cache helpers
 # ──────────────────────────────────────────────
 
-def load_cached(source: str, paper_id: str) -> dict | None:
+def load_cached(source: str, paper_id: str) -> Optional[dict]:
     path = os.path.join(_DATA_DIR, source, f"{paper_id}.json")
     if not os.path.exists(path):
         return None

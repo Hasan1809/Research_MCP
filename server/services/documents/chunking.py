@@ -88,7 +88,7 @@ def chunk_sections(sections: list[dict]) -> list[dict]:
 
     avg_len = int(sum(len(c["text"]) for c in result) / len(result)) if result else 0
     logger.info(
-        "Section-aware chunking: %d sections → %d chunks, avg_len=%d",
+        "Section-aware chunking: %d sections -> %d chunks, avg_len=%d",
         total_sections, len(result), avg_len,
     )
     return result

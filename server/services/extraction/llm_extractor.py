@@ -311,7 +311,7 @@ Return the JSON profile now.\
 """
 
 
-def build_profile(text: str) -> tuple[dict, str]:
+def build_profile(text: str, paper_id: str = "") -> tuple[dict, str]:
     api_token = os.environ["IONOS_API_TOKEN"]
     base_url = os.environ["IONOS_BASE_URL"].rstrip("/")
     model = os.environ["IONOS_MODEL"]
@@ -347,6 +347,7 @@ def build_profile(text: str) -> tuple[dict, str]:
         total_tokens=_usage.get("total_tokens", 0),
         latency_seconds=_latency,
         input_chars=len(text),
+        paper_id=paper_id,
     )
 
     raw = _resp["choices"][0]["message"]["content"].strip()
