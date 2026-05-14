@@ -10,49 +10,63 @@ def register_prompts(mcp: FastMCP):
         """
         return f"""Execute this research workflow for: "{topic}"
 
-STEPS (execute silently, do not narrate each step):
+STEPS — execute every step in order, do not skip any:
 1. search_papers_tool(query="{topic}", limit={num_papers + 2})
-2. Pick the {num_papers} most relevant arxiv papers
-3. For each: ingest_paper_tool → build_paper_profile_tool
-4. detect_gaps_tool(papers=[...])
-5. suggest_experiments_tool(papers=[...])
+2. Pick the {num_papers} most relevant arxiv or semantic_scholar papers. Only select
+   papers whose title or abstract directly mentions the research
+   topic. Reject papers that are only loosely related by domain.
+3. Call batch_ingest_papers_tool once with all selected papers
+   as a list. Never call ingest_paper_tool individually when you
+   have multiple papers. Use the paper_id and source exactly as
+   returned by search_papers_tool; never pass a URL as paper_id.
+4. Call batch_build_profiles_tool once with all papers as a list.
+   Never call build_paper_profile_tool individually when you have
+   multiple papers. Never use extract_paper_insights_tool.
+5. Call batch_add_to_project_tool once using project name "{topic}"
+   and all selected papers as a list. Never call add_to_project_tool
+   individually when you have multiple papers.
+6. Call detect_gaps_tool with all papers as a list.
+7. Call suggest_experiments_tool with all papers as a list.
+   This step is mandatory. Do not stop after detect_gaps_tool.
 
-OUTPUT FORMAT (use this EXACTLY):
+OUTPUT — after all seven steps are complete, write your response
+in this exact format and nothing else:
 
----
-## Research Analysis: {topic}
+## Papers Analyzed
+For each paper: paper_id, title, type, one sentence on core contribution.
 
-### Papers Analyzed
-| # | Title | ID | Type | Core Contribution |
-|---|-------|-----|------|-------------------|
-| 1 | ... | ... | ... | 1 sentence |
+## Research Gaps
+For each gap from detect_gaps_tool output:
+- Gap name
+- One sentence description
+- Which paper IDs support it
 
-### Research Gaps
-| Gap | Type | Evidence | Papers |
-|-----|------|----------|--------|
-| ... | research/methodological | ... | IDs |
+## Methodological Gaps
+Same format as Research Gaps.
 
-### Contradictions
-| Finding A | Finding B | Papers | Nature |
-|-----------|-----------|--------|--------|
+## Contradictions
+For each contradiction: what conflicts, which paper IDs, one sentence
+on why it matters.
 
-### Suggested Experiments
-| # | Title | Addresses | Feasibility | Method (1 sentence) |
-|---|-------|-----------|-------------|---------------------|
+## Suggested Experiments
+For each experiment from suggest_experiments_tool output:
+- Title
+- One sentence hypothesis
+- One sentence method
+- Feasibility rating
+- Which paper IDs it builds on
 
-### Connections
-- [1 sentence per connection]
-
-### Field Summary
-[2-3 sentences from gap detection field_summary]
----
+## Field Summary
+The field_summary string from detect_gaps_tool output verbatim.
 
 RULES:
-- Do NOT add commentary before or after the tables
-- Do NOT explain what each tool does
-- Do NOT show raw JSON
-- Keep table cells to 1 sentence max
-- Total response must be under 800 words"""
+- Do not create any files or documents except the project manifest created by batch_add_to_project_tool.
+- Do not add budget estimates, timelines, FTE counts, or resource requirements.
+- Do not add executive summaries, next steps, or collaboration sections.
+- Do not add any sections not listed in the OUTPUT format above.
+- Do not add commentary before or after the output.
+- Keep every field to one sentence maximum unless stated otherwise.
+- The tool outputs are the deliverable. Present them and stop."""
 
     @mcp.prompt()
     def analyze_paper(paper_id: str, source: str = "arxiv") -> str:
@@ -88,23 +102,32 @@ Do NOT add commentary. Do NOT show JSON."""
         """Compare all papers in a project."""
         return f"""Compare papers in project "{project}":
 
-STEPS: detect_gaps_tool(project="{project}") → suggest_experiments_tool(project="{project}")
+STEPS — execute every step in order, do not skip any:
+1. detect_gaps_tool(project="{project}")
+2. suggest_experiments_tool(project="{project}")
+   This step is mandatory. Do not stop after detect_gaps_tool.
 
-OUTPUT FORMAT (use EXACTLY):
+OUTPUT — after both steps are complete, write your response
+in this exact format and nothing else:
 
----
-## Comparison: {project}
+## Research Gaps
+For each gap: one sentence description, which paper IDs support it.
 
-### Gaps
-| Gap | Type | Evidence |
-|-----|------|----------|
+## Methodological Gaps
+Same format as Research Gaps.
 
-### Experiments
-| # | Title | Feasibility | Method |
-|---|-------|-------------|--------|
+## Contradictions
+What conflicts, which paper IDs, one sentence on why it matters.
 
-### Field Summary
-[2-3 sentences]
----
+## Suggested Experiments
+For each experiment: title, one sentence hypothesis, one sentence method,
+feasibility, which paper IDs it builds on.
 
-Do NOT add commentary."""
+## Field Summary
+The field_summary string from detect_gaps_tool output verbatim.
+
+RULES:
+- Do not create any files or documents.
+- Do not add budget estimates, timelines, FTE counts, or resource requirements.
+- Do not add any sections not listed above.
+- Keep every field to one sentence maximum unless stated otherwise."""

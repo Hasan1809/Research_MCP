@@ -1,19 +1,14 @@
 import io
-import json
-import os
 import re
-import httpx
 from typing import List, Optional
+
+import httpx
 from pypdf import PdfReader
+
+from services.paper_repository import load_paper_cache, save_paper_cache
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
-
-_DATA_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "..", "data", "papers")
-
-# ──────────────────────────────────────────────
-# Section detection heuristics
-# ──────────────────────────────────────────────
 
 _SECTION_KEYWORDS = frozenset({
     "abstract", "introduction", "related work", "background", "motivation",
@@ -27,8 +22,8 @@ _SECTION_KEYWORDS = frozenset({
     "problem statement", "preliminaries", "notation",
 })
 
-_NUMBERED_RE = re.compile(r"^\d+(\.\d+)*\.?\s+\S")   # "1. Intro", "3.1 Methods"
-_ALL_CAPS_RE = re.compile(r"^[A-Z][A-Z\s\-:]{3,}$")  # "INTRODUCTION"
+_NUMBERED_RE = re.compile(r"^\d+(\.\d+)*\.?\s+\S")
+_ALL_CAPS_RE = re.compile(r"^[A-Z][A-Z\s\-:]{3,}$")
 
 
 def _is_heading(line: str) -> bool:
@@ -40,7 +35,6 @@ def _is_heading(line: str) -> bool:
     lower = stripped.lower()
     if lower in _SECTION_KEYWORDS:
         return True
-    # "1 Introduction", "2 Related Work" — number then keyword
     parts = lower.split(None, 1)
     if len(parts) == 2 and parts[0].rstrip(".").isdigit() and parts[1] in _SECTION_KEYWORDS:
         return True
@@ -57,22 +51,13 @@ def _heading_level(heading: str) -> int:
     return 1
 
 
-def detect_sections_from_text(
-    text: str,
-    pages_text: Optional[List[str]] = None,
-) -> dict:
-    """
-    Detect sections from already-extracted text.
-    If pages_text is provided, assigns start_page / end_page to each section.
-    Returns the same structure as extract_structured_text.
-    """
-    # Build page-offset map for page assignment
+def detect_sections_from_text(text: str, pages_text: Optional[List[str]] = None) -> dict:
     page_offsets: list[int] = []
     if pages_text:
         offset = 0
         for pt in pages_text:
             page_offsets.append(offset)
-            offset += len(pt) + 1  # +1 for the \n separator
+            offset += len(pt) + 1
 
     lines = text.split("\n")
     sections: list[dict] = []
@@ -115,15 +100,21 @@ def detect_sections_from_text(
     _flush(current_heading, current_level, body_lines, heading_char_offset)
 
     if not sections:
-        sections = [{"heading": "Full Text", "level": 1, "text": text.strip(),
-                     "start_page": 0, "end_page": _char_to_page(char_offset)}]
+        sections = [{
+            "heading": "Full Text",
+            "level": 1,
+            "text": text.strip(),
+            "start_page": 0,
+            "end_page": _char_to_page(char_offset),
+        }]
 
-    # Extract title and abstract from detected sections
     title = _extract_title(text)
     abstract = _extract_abstract(sections)
 
-    logger.info("Section detection: %d sections, title=%r, abstract_len=%d",
-                len(sections), title[:60] if title else "", len(abstract))
+    logger.info(
+        "Section detection: %d sections, title=%r, abstract_len=%d",
+        len(sections), title[:60] if title else "", len(abstract),
+    )
 
     return {
         "full_text": text,
@@ -138,7 +129,6 @@ def detect_sections_from_text(
 
 
 def _extract_title(text: str) -> str:
-    """Heuristic: first substantial line of the document."""
     for line in text.split("\n")[:30]:
         stripped = line.strip()
         if len(stripped) > 20 and not stripped[0].isdigit():
@@ -153,34 +143,20 @@ def _extract_abstract(sections: list[dict]) -> str:
     return ""
 
 
-# ──────────────────────────────────────────────
-# Cache helpers
-# ──────────────────────────────────────────────
-
 def load_cached(source: str, paper_id: str) -> Optional[dict]:
-    path = os.path.join(_DATA_DIR, source, f"{paper_id}.json")
-    if not os.path.exists(path):
+    paper = load_paper_cache(source, paper_id)
+    if paper is None:
         return None
-    logger.info("Loading cached paper: %s", path)
-    with open(path, encoding="utf-8") as f:
-        return json.load(f)
+    logger.info("Loading cached paper: data/papers/%s/%s.json", source, paper_id)
+    return paper
 
 
 def save_cached(source: str, paper_id: str, data: dict):
-    folder = os.path.join(_DATA_DIR, source)
-    os.makedirs(folder, exist_ok=True)
-    path = os.path.join(folder, f"{paper_id}.json")
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2)
-    logger.info("Saved paper to cache: %s", path)
+    save_paper_cache(source, paper_id, data)
+    logger.info("Saved paper to cache: data/papers/%s/%s.json", source, paper_id)
 
-
-# ──────────────────────────────────────────────
-# Download functions
-# ──────────────────────────────────────────────
 
 def download_and_extract_text(pdf_url: str) -> str:
-    """Download PDF and return flat text. Kept for backward compatibility."""
     logger.info("Downloading PDF: %s", pdf_url)
     response = httpx.get(pdf_url, follow_redirects=True, timeout=30)
     response.raise_for_status()
@@ -198,7 +174,6 @@ def download_and_extract_text(pdf_url: str) -> str:
 
 
 def extract_structured_text(pdf_url: str) -> dict:
-    """Download PDF and return structured text with section detection."""
     logger.info("Downloading PDF for structured extraction: %s", pdf_url)
     response = httpx.get(pdf_url, follow_redirects=True, timeout=30)
     response.raise_for_status()

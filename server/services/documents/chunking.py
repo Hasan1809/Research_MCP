@@ -1,4 +1,5 @@
 import re
+import os
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -9,6 +10,13 @@ OVERLAP_CHARS = 80
 
 _CONCLUSION_KEYWORDS = {"conclusion", "conclusions", "summary", "discussion"}
 _ABSTRACT_KEYWORDS = {"abstract"}
+
+
+def _log_chunk_detail(message: str, *args) -> None:
+    if os.environ.get("LOG_CHUNK_DETAILS", "false").strip().lower() in {"1", "true", "yes", "on"}:
+        logger.info(message, *args)
+    else:
+        logger.debug(message, *args)
 
 
 def chunk_text(text: str) -> list[str]:
@@ -39,7 +47,7 @@ def chunk_text(text: str) -> list[str]:
         chunks.append(current.strip())
 
     avg_len = int(sum(len(c) for c in chunks) / len(chunks)) if chunks else 0
-    logger.info(
+    _log_chunk_detail(
         "Paragraph-aware chunking: chunks=%d avg_len=%d chars",
         len(chunks), avg_len,
     )
@@ -87,7 +95,7 @@ def chunk_sections(sections: list[dict]) -> list[dict]:
             })
 
     avg_len = int(sum(len(c["text"]) for c in result) / len(result)) if result else 0
-    logger.info(
+    _log_chunk_detail(
         "Section-aware chunking: %d sections -> %d chunks, avg_len=%d",
         total_sections, len(result), avg_len,
     )

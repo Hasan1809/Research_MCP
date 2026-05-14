@@ -1,12 +1,10 @@
 import json
-import os
 import re
-import time
-import httpx
 from collections import Counter
-from services.extraction.llm_extractor import _strip_code_fences
+
+from config import IONOS_API_TOKEN, IONOS_BASE_URL, IONOS_MODEL
+from services.extraction.llm_client import LLMClient
 from utils.logger import get_logger
-from utils.usage_tracker import log_usage
 
 logger = get_logger(__name__)
 
@@ -19,9 +17,7 @@ _STOPWORDS = {
 }
 
 _ANALYSIS_SYSTEM_PROMPT = """\
-You are a research analyst. Given titles and abstracts of multiple \
-academic papers on a related topic, identify the major themes, trends, \
-and methodological patterns.
+You are a research analyst. Given titles and abstracts of multiple academic papers on a related topic, identify the major themes, trends, and methodological patterns.
 
 Rules:
 - Themes must be specific to this collection of papers, not generic.
@@ -53,8 +49,7 @@ Do not include any text outside the JSON object.\
 """
 
 _ANALYSIS_USER_TEMPLATE = """\
-Here are {n} academic papers. Analyze the themes, trends, and \
-methodological patterns across them.
+Here are {n} academic papers. Analyze the themes, trends, and methodological patterns across them.
 
 {papers_text}
 
@@ -68,7 +63,6 @@ def _tokenize(text: str) -> list[str]:
 
 
 def _analyze_papers_fallback(papers: list[dict]) -> dict:
-    """Word-frequency fallback used when the LLM call fails."""
     all_words: list[str] = []
     years: list[int] = []
     sources: list[str] = []
@@ -114,13 +108,8 @@ def _analyze_papers_fallback(papers: list[dict]) -> dict:
 
 
 def analyze_papers(papers: list[dict]) -> dict:
-    """LLM-powered paper analysis with word-frequency fallback."""
-    try:
-        api_token = os.environ["IONOS_API_TOKEN"]
-        base_url = os.environ["IONOS_BASE_URL"].rstrip("/")
-        model = os.environ["IONOS_MODEL"]
-    except KeyError as e:
-        logger.warning("IONOS env var missing (%s) — using fallback analysis", e)
+    if not (IONOS_API_TOKEN and IONOS_BASE_URL and IONOS_MODEL):
+        logger.warning("IONOS config missing - using fallback analysis")
         return _analyze_papers_fallback(papers)
 
     papers_text = "\n\n".join(
@@ -130,61 +119,22 @@ def analyze_papers(papers: list[dict]) -> dict:
         for p in papers
     )
 
-    payload = {
-        "model": model,
-        "messages": [
-            {"role": "system", "content": _ANALYSIS_SYSTEM_PROMPT},
-            {
-                "role": "user",
-                "content": _ANALYSIS_USER_TEMPLATE.format(
-                    n=len(papers), papers_text=papers_text
-                ),
-            },
-        ],
-        "response_format": {"type": "json_object"},
-    }
-    logger.info("Analyzing %d papers with LLM: model=%s", len(papers), model)
+    logger.info("Analyzing %d papers with LLM: model=%s", len(papers), IONOS_MODEL)
 
     try:
-        _start = time.time()
-        response = httpx.post(
-            f"{base_url}/chat/completions",
-            headers={"Authorization": f"Bearer {api_token}", "Content-Type": "application/json"},
-            json=payload,
+        parsed, raw = LLMClient().call(
+            system=_ANALYSIS_SYSTEM_PROMPT,
+            user=_ANALYSIS_USER_TEMPLATE.format(n=len(papers), papers_text=papers_text),
+            json_mode=True,
             timeout=60,
+            tool_name="analyze_papers",
+            input_chars=len(papers_text),
         )
-        if response.is_error:
-            logger.error(
-                "IONOS API error (analyze_papers): status=%d body=%s",
-                response.status_code, response.text,
-            )
-        response.raise_for_status()
     except Exception as e:
-        logger.warning("LLM analysis failed (%s) — using fallback", e)
+        logger.warning("LLM analysis failed (%s) - using fallback", e)
         return _analyze_papers_fallback(papers)
 
-    _latency = time.time() - _start
-    _resp = response.json()
-    _usage = _resp.get("usage", {})
-    log_usage(
-        tool_name="analyze_papers",
-        model=model,
-        input_tokens=_usage.get("prompt_tokens", 0),
-        output_tokens=_usage.get("completion_tokens", 0),
-        total_tokens=_usage.get("total_tokens", 0),
-        latency_seconds=_latency,
-        input_chars=len(papers_text),
-    )
-
-    raw = _resp["choices"][0]["message"]["content"].strip()
     logger.info("LLM analysis response: %d chars", len(raw))
-
-    try:
-        parsed = json.loads(_strip_code_fences(raw))
-    except json.JSONDecodeError as e:
-        logger.warning("Failed to parse LLM analysis response (%s) — using fallback", e)
-        return _analyze_papers_fallback(papers)
-
     logger.info(
         "LLM analysis complete: themes=%d trends=%d",
         len(parsed.get("themes", [])),
@@ -194,7 +144,6 @@ def analyze_papers(papers: list[dict]) -> dict:
 
 
 def _most_common_items(lists: list[list[str]], threshold: int) -> list[str]:
-    """Return items that appear in at least `threshold` of the provided lists."""
     counts: Counter = Counter()
     for items in lists:
         for item in set(item.lower().strip() for item in items):
@@ -204,19 +153,18 @@ def _most_common_items(lists: list[list[str]], threshold: int) -> list[str]:
 
 def synthesize_insights(insights: list[dict]) -> dict:
     n = len(insights)
-    min_overlap = max(2, n // 2)  # item must appear in at least half the papers (min 2)
+    min_overlap = max(2, n // 2)
 
-    methods_lists   = [i.get("methods", []) for i in insights]
-    datasets_lists  = [i.get("datasets", []) for i in insights]
-    limits_lists    = [i.get("limitations", []) for i in insights]
-    results_lists   = [i.get("results", []) for i in insights]
+    methods_lists = [i.get("methods", []) for i in insights]
+    datasets_lists = [i.get("datasets", []) for i in insights]
+    limits_lists = [i.get("limitations", []) for i in insights]
+    results_lists = [i.get("results", []) for i in insights]
 
-    common_methods      = _most_common_items(methods_lists, min_overlap)
-    common_datasets     = _most_common_items(datasets_lists, min_overlap)
+    common_methods = _most_common_items(methods_lists, min_overlap)
+    common_datasets = _most_common_items(datasets_lists, min_overlap)
     recurring_limitations = _most_common_items(limits_lists, min_overlap)
-    common_findings     = _most_common_items(results_lists, min_overlap)
+    common_findings = _most_common_items(results_lists, min_overlap)
 
-    # Notable differences: items unique to a single paper
     all_methods = [item.lower().strip() for lst in methods_lists for item in lst]
     method_counts = Counter(all_methods)
     notable_differences = [item for item, count in method_counts.items() if count == 1][:5]

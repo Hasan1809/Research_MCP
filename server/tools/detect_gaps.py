@@ -1,44 +1,38 @@
 """MCP tool for research gap detection across multiple papers."""
 import json
-import os
 from datetime import datetime
+
+from config import DATA_DIR
 from services.analysis.gap_detector import detect_gaps
+from services.paper_repository import load_profile_or_insights
 from services.project_manager import get_project_papers
 from utils.logger import get_logger, log_invocation
 
 logger = get_logger(__name__)
 
-_PROFILES_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "data", "profiles")
-_INSIGHTS_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "data", "insights")
-_ANALYSIS_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "data", "analysis")
+_ANALYSIS_DIR = DATA_DIR / "analysis"
 
 
 def _load_paper_data(paper_id: str, source: str) -> dict:
-    profile_path = os.path.join(_PROFILES_DIR, source, f"{paper_id}.json")
-    insights_path = os.path.join(_INSIGHTS_DIR, source, f"{paper_id}.json")
-
-    if os.path.exists(profile_path):
-        logger.info("Loading profile for paper_id=%r", paper_id)
-        with open(profile_path, encoding="utf-8") as f:
-            return json.load(f)
-    if os.path.exists(insights_path):
-        logger.info("Loading insights (no profile) for paper_id=%r", paper_id)
-        with open(insights_path, encoding="utf-8") as f:
-            return json.load(f)
-    raise FileNotFoundError(
-        f"No profile or insights found for paper_id={paper_id!r} source={source!r}. "
-        "Run build_paper_profile_tool first."
-    )
+    logger.info("Loading profile or insights for paper_id=%r", paper_id)
+    return load_profile_or_insights(source, paper_id)
 
 
 def detect_gaps_tool(papers: list[dict] = None, project: str = None) -> dict:
     """
     Identify research gaps across multiple profiled papers.
 
-    Call with project="name" to use all papers in a project, or pass
-    an explicit papers list. Each paper must have been profiled first.
+    Requires build_paper_profile_tool to have been called for each paper first.
+    Pass papers as a list of dicts: [{"paper_id": "2602.07652", "source": "arxiv"}, ...]
+    Requires at least 2 papers.
 
-    Returns: research_gaps, methodological_gaps, contradictions,
+    Example:
+      detect_gaps_tool(papers=[
+        {"paper_id": "2602.07652", "source": "arxiv"},
+        {"paper_id": "2603.17419", "source": "arxiv"}
+      ])
+
+    Returns research_gaps, methodological_gaps, contradictions,
     connections, and field_summary.
     """
     if project:
@@ -72,12 +66,11 @@ def detect_gaps_tool(papers: list[dict] = None, project: str = None) -> dict:
         log_invocation("detect_gaps_tool", arguments, error=str(e))
         raise
 
-    # Save result to data/analysis/
-    os.makedirs(_ANALYSIS_DIR, exist_ok=True)
+    _ANALYSIS_DIR.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     paper_ids = "_".join(ref.get("paper_id", "?").replace("/", "-") for ref in papers[:3])
-    save_path = os.path.join(_ANALYSIS_DIR, f"gap_analysis_{timestamp}_{paper_ids}.json")
-    with open(save_path, "w", encoding="utf-8") as f:
+    save_path = _ANALYSIS_DIR / f"gap_analysis_{timestamp}_{paper_ids}.json"
+    with save_path.open("w", encoding="utf-8") as f:
         json.dump({"papers": papers, "analysis": result}, f, indent=2)
     logger.info("Gap analysis saved to %s", save_path)
 

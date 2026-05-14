@@ -53,6 +53,12 @@ def fetch_papers(query: str, limit: int) -> list[dict]:
                     author.findtext("atom:name", namespaces=ns)
                     for author in entry.findall("atom:author", namespaces=ns)
                 ],
+                "venue": "",
+                "doi": "",
+                "arxiv_id": entry.findtext("atom:id", namespaces=ns).split("/abs/")[-1].split("v")[0].strip(),
+                "semantic_scholar_id": "",
+                "url": entry.findtext("atom:id", namespaces=ns).strip(),
+                "pdf_url": f"https://arxiv.org/pdf/{entry.findtext('atom:id', namespaces=ns).split('/abs/')[-1].split('v')[0].strip()}",
                 "source": "arxiv",
             }
             for entry in root.findall("atom:entry", namespaces=ns)

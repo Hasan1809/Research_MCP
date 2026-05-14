@@ -1,22 +1,20 @@
-import json
-import os
+from config import FULL_TEXT_CHAR_LIMIT
 from services.documents.pdf_service import load_cached
-from services.extraction.llm_extractor import extract_insights, extract_field
+from services.extraction.llm_extractor import extract_field, extract_insights
+from services.paper_repository import save_insights
 from services.retrieval.vector_store import query_chunks
 from utils.logger import get_logger, log_invocation
 
 logger = get_logger(__name__)
 
-_INSIGHTS_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "data", "insights")
-
-MAX_FULL_TEXT_CHARS = int(os.environ.get("FULL_TEXT_CHAR_LIMIT", 80_000))
+MAX_FULL_TEXT_CHARS = FULL_TEXT_CHAR_LIMIT
 
 _RETRIEVAL_QUERIES = {
-    "methods":      "methodology evaluation criteria reporting framework checklist recommendations approach",
-    "results":      "results and findings in this paper",
-    "datasets":     "datasets used in this paper",
-    "limitations":  "limitations discussed in this paper",
-    "future_work":  "future work proposed in this paper",
+    "methods": "methodology evaluation criteria reporting framework checklist recommendations approach",
+    "results": "results and findings in this paper",
+    "datasets": "datasets used in this paper",
+    "limitations": "limitations discussed in this paper",
+    "future_work": "future work proposed in this paper",
 }
 
 _CANDIDATE_K = 8
@@ -63,12 +61,8 @@ def _select_chunks_for_field(field: str, query: str, paper_id: str, source: str)
 
 
 def _save_insights(paper_id: str, source: str, result: dict):
-    folder = os.path.join(_INSIGHTS_DIR, source)
-    os.makedirs(folder, exist_ok=True)
-    path = os.path.join(folder, f"{paper_id}.json")
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump({"paper_id": paper_id, "source": source, **result}, f, indent=2)
-    logger.info("Saved insights to %s", path)
+    save_insights(source, paper_id, {"paper_id": paper_id, "source": source, **result})
+    logger.info("Saved insights for data/insights/%s/%s.json", source, paper_id)
 
 
 def extract_paper_insights_tool(paper_id: str, source: str) -> dict:
@@ -83,7 +77,6 @@ def extract_paper_insights_tool(paper_id: str, source: str) -> dict:
 
     full_text = _get_full_text(cached)
 
-    # ── PRIMARY PATH: single-pass extraction from full text ──────────────────
     if len(full_text) <= MAX_FULL_TEXT_CHARS:
         logger.info("Using single-pass full-text extraction: %d chars", len(full_text))
         try:
@@ -100,9 +93,8 @@ def extract_paper_insights_tool(paper_id: str, source: str) -> dict:
         })
         return result
 
-    # ── FALLBACK: per-field chunk retrieval ──────────────────────────────────
     logger.info(
-        "Full text too large (%d chars) — using per-field chunk retrieval fallback",
+        "Full text too large (%d chars) - using per-field chunk retrieval fallback",
         len(full_text),
     )
     result: dict = {}
@@ -111,7 +103,7 @@ def extract_paper_insights_tool(paper_id: str, source: str) -> dict:
     for field, query in _RETRIEVAL_QUERIES.items():
         chunks = _select_chunks_for_field(field, query, paper_id, source)
         if not chunks:
-            logger.warning("No chunks retrieved for field=%r — skipping LLM call", field)
+            logger.warning("No chunks retrieved for field=%r - skipping LLM call", field)
             result[field] = []
             invocation_details[field] = {"chunk_indices": [], "raw_completion": ""}
             continue
@@ -132,6 +124,20 @@ def extract_paper_insights_tool(paper_id: str, source: str) -> dict:
 
     if not result:
         error = "No indexed chunks found. Run index_paper_tool first."
+        log_invocation("extract_paper_insights_tool", arguments, error=error)
+        raise ValueError(error)
+
+    if not any([
+        result.get("methods"),
+        result.get("results"),
+        result.get("limitations"),
+        result.get("future_work"),
+    ]):
+        error = (
+            f"Insight extraction produced empty output for paper_id={paper_id!r}. "
+            "The paper must be indexed before fallback retrieval will work. "
+            "Run index_paper_tool first, then retry."
+        )
         log_invocation("extract_paper_insights_tool", arguments, error=error)
         raise ValueError(error)
 

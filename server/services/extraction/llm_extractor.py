@@ -1,20 +1,23 @@
 import json
 import os
-import time
-import httpx
+
+from config import IONOS_MODEL
+from services.extraction.llm_client import LLMClient
 from utils.logger import get_logger
-from utils.usage_tracker import log_usage
 
 logger = get_logger(__name__)
 
 
+def _log_raw_llm_output() -> bool:
+    return os.environ.get("LOG_RAW_LLM_OUTPUT", "false").strip().lower() in {
+        "1", "true", "yes", "on"
+    }
+
+
 def _strip_code_fences(text: str) -> str:
-    """Remove markdown code fences (```json ... ``` or ``` ... ```) from LLM output."""
     text = text.strip()
     if text.startswith("```"):
-        # Remove opening fence line (```json or ```)
         text = text[text.index("\n") + 1:] if "\n" in text else text[3:]
-        # Remove closing fence
         if text.rstrip().endswith("```"):
             text = text.rstrip()[:-3].rstrip()
     return text.strip()
@@ -78,8 +81,7 @@ The "methods" field should include ANY of the following if present in the text:
 - structured questions, protocols, or recommended practices
 
 Important:
-- For framework, recommendation, or review papers, treat the proposed framework, checklist, \
-evaluation structure, or reporting procedure as methods.
+- For framework, recommendation, or review papers, treat the proposed framework, checklist, evaluation structure, or reporting procedure as methods.
 - Do NOT return an empty list just because the paper is not a traditional experiment paper.
 - Only extract what is explicitly stated or clearly described in the text.
 - Concise paraphrases are acceptable; do not fabricate details.
@@ -106,8 +108,7 @@ The "results" field must NOT include:
 - limitations (those belong in "limitations")
 
 Important:
-- For framework, recommendation, or review papers: only include explicit conclusions \
-or reported findings — not the framework content itself.
+- For framework, recommendation, or review papers: only include explicit conclusions or reported findings - not the framework content itself.
 - Keep grounding strict: only extract what is clearly stated as a finding or conclusion.
 - Concise paraphrases are acceptable; do not fabricate details.
 - Return an empty list if no clear results or conclusions are present.
@@ -129,127 +130,9 @@ Extract the "{field}" from the following paper text only.
 Return the JSON object now.\
 """
 
-
-def extract_field(field: str, text: str) -> tuple[list, str]:
-    api_token = os.environ["IONOS_API_TOKEN"]
-    base_url = os.environ["IONOS_BASE_URL"].rstrip("/")
-    model = os.environ["IONOS_MODEL"]
-
-    system_prompt = _FIELD_SYSTEM_PROMPTS.get(field) or _FIELD_SYSTEM_PROMPT.format(field=field)
-    logger.debug("System prompt for field=%r: %s", field, system_prompt)
-
-    payload = {
-        "model": model,
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": _FIELD_USER_PROMPT_TEMPLATE.format(field=field, text=text)},
-        ],
-        "response_format": {"type": "json_object"},
-    }
-    logger.info("Calling IONOS LLM (field=%r): model=%s text_chars=%d", field, model, len(text))
-
-    _start = time.time()
-    response = httpx.post(
-        f"{base_url}/chat/completions",
-        headers={"Authorization": f"Bearer {api_token}", "Content-Type": "application/json"},
-        json=payload,
-        timeout=60,
-    )
-    if response.is_error:
-        logger.error("IONOS API error (field=%r): status=%d body=%s", field, response.status_code, response.text)
-    response.raise_for_status()
-    _latency = time.time() - _start
-    _resp = response.json()
-    _usage = _resp.get("usage", {})
-    log_usage(
-        tool_name="extract_field",
-        model=model,
-        input_tokens=_usage.get("prompt_tokens", 0),
-        output_tokens=_usage.get("completion_tokens", 0),
-        total_tokens=_usage.get("total_tokens", 0),
-        latency_seconds=_latency,
-        input_chars=len(text),
-    )
-
-    raw = _resp["choices"][0]["message"]["content"].strip()
-    logger.info("LLM response (field=%r): %d chars", field, len(raw))
-    logger.debug("Raw completion (field=%r): %s", field, raw)
-
-    try:
-        parsed = json.loads(_strip_code_fences(raw))
-    except json.JSONDecodeError as e:
-        logger.error("Failed to parse LLM response for field=%r — returning empty. raw=%s error=%s", field, raw, e)
-        return [], raw
-
-    return parsed.get(field) or [], raw
-
-
-def extract_insights(text: str) -> tuple[dict, str]:
-    api_token = os.environ["IONOS_API_TOKEN"]
-    base_url = os.environ["IONOS_BASE_URL"].rstrip("/")
-    model = os.environ["IONOS_MODEL"]
-
-    user_message = _USER_PROMPT_TEMPLATE.format(text=text)
-    payload = {
-        "model": model,
-        "messages": [
-            {"role": "system", "content": _SYSTEM_PROMPT},
-            {"role": "user", "content": user_message},
-        ],
-    }
-    logger.info("Calling IONOS LLM: model=%s text_chars=%d url=%s", model, len(text), f"{base_url}/chat/completions")
-    logger.debug("Request payload: %s", json.dumps({**payload, "messages": [{"role": m["role"], "content": m["content"][:200]} for m in payload["messages"]]}, indent=2))
-
-    _start = time.time()
-    response = httpx.post(
-        f"{base_url}/chat/completions",
-        headers={
-            "Authorization": f"Bearer {api_token}",
-            "Content-Type": "application/json",
-        },
-        json=payload,
-        timeout=60,
-    )
-    if response.is_error:
-        logger.error("IONOS API error: status=%d body=%s", response.status_code, response.text)
-    response.raise_for_status()
-    _latency = time.time() - _start
-    _resp = response.json()
-    _usage = _resp.get("usage", {})
-    log_usage(
-        tool_name="extract_insights",
-        model=model,
-        input_tokens=_usage.get("prompt_tokens", 0),
-        output_tokens=_usage.get("completion_tokens", 0),
-        total_tokens=_usage.get("total_tokens", 0),
-        latency_seconds=_latency,
-        input_chars=len(text),
-    )
-
-    raw_completion = _resp["choices"][0]["message"]["content"].strip()
-    logger.info("LLM response received: %d chars", len(raw_completion))
-    logger.debug("Raw model completion: %s", raw_completion)
-
-    try:
-        parsed = json.loads(_strip_code_fences(raw_completion))
-    except json.JSONDecodeError as e:
-        logger.exception("Failed to parse LLM response as JSON: %s", e)
-        raise
-
-    result = {
-        "methods": parsed.get("methods") or [],
-        "results": parsed.get("results") or [],
-        "datasets": parsed.get("datasets") or [],
-        "limitations": parsed.get("limitations") or [],
-        "future_work": parsed.get("future_work") or [],
-        "debug_notes": parsed.get("debug_notes") or "",
-    }
-    return result, raw_completion
-
-
 _PROFILE_SYSTEM_PROMPT = """\
 You are an expert research analyst. You will be given excerpts from a scientific paper.
-Your job is to capture the ESSENCE and IDENTITY of this specific paper — not produce a generic academic summary.
+Your job is to capture the ESSENCE and IDENTITY of this specific paper - not produce a generic academic summary.
 
 A good profile must let a reader answer: What is this paper really about? What are the authors arguing? What makes it distinctive?
 
@@ -260,7 +143,7 @@ Return ONLY a valid JSON object with exactly these keys:
 {
   "paper_type": "<one of: empirical study | framework paper | recommendation paper | survey | benchmark paper | position paper | perspective paper | other>",
 
-  "research_problem": "<What specific problem is this paper addressing? Be concrete. Name the gap, failure, or challenge. Not generic — describe THIS paper's problem specifically. 2-3 sentences.>",
+  "research_problem": "<What specific problem is this paper addressing? Be concrete. Name the gap, failure, or challenge. Not generic - describe THIS paper's problem specifically. 2-3 sentences.>",
 
   "main_contribution": "<What does this paper introduce, propose, or demonstrate that did not exist before? Be specific about what is new. Avoid vague phrases like 'a new approach'. Name the actual thing. 2-3 sentences.>",
 
@@ -286,7 +169,10 @@ Return ONLY a valid JSON object with exactly these keys:
 
   "future_work": ["<future direction explicitly mentioned in the text. Return an empty list if the paper does not explicitly discuss this.>"],
 
-  "plain_english_summary": "<3-5 sentences explaining this paper to a smart student with no prior context. Cover: what problem it addresses, what the authors did, and what the key takeaway is. Make it specific to THIS paper — not a generic academic paper.>"
+  "plain_english_summary": "<3-5 sentences explaining this paper to a smart student with no prior context. Cover: what problem it addresses, what the authors did, and what the key takeaway is. Make it specific to THIS paper - not a generic academic paper.>"
+,
+  "supporting_paper_ids": ["<the current paper_id only>"],
+  "citation_label": "<use [paper_id]>"
 }
 
 Rules:
@@ -294,12 +180,13 @@ Rules:
 - Concise paraphrasing is fine; do not copy large verbatim passages.
 - Narrative fields (research_problem, main_contribution, etc.) must be specific and concrete, not generic.
 - If a list field has no supporting text, return an empty list. Do NOT infer, speculate, or generate plausible-sounding content. An empty list is always preferred over fabricated entries. Only include items that are explicitly stated or clearly described in the text.
+- Attribution rule: this profile is for exactly one paper. Use only the provided paper_id in supporting_paper_ids and citation_label. Do not cite any other paper.
 - Never return empty strings for narrative fields.
 - Do not include any text outside the JSON object.
 """
 
 _PROFILE_USER_TEMPLATE = """\
-Here are excerpts from a research paper. Build a complete, specific paper profile from them.
+Here are excerpts from research paper {paper_id}. Build a complete, specific paper profile from them.
 
 Do NOT produce a generic academic summary. Capture what is distinctive and essential about THIS paper specifically.
 
@@ -311,74 +198,100 @@ Return the JSON profile now.\
 """
 
 
-def build_profile(text: str, paper_id: str = "") -> tuple[dict, str]:
-    api_token = os.environ["IONOS_API_TOKEN"]
-    base_url = os.environ["IONOS_BASE_URL"].rstrip("/")
-    model = os.environ["IONOS_MODEL"]
+def extract_field(field: str, text: str) -> tuple[list, str]:
+    system_prompt = _FIELD_SYSTEM_PROMPTS.get(field) or _FIELD_SYSTEM_PROMPT.format(field=field)
+    logger.debug("System prompt for field=%r: %s", field, system_prompt)
+    logger.info("Calling IONOS LLM (field=%r): model=%s text_chars=%d", field, IONOS_MODEL, len(text))
 
-    payload = {
-        "model": model,
-        "messages": [
-            {"role": "system", "content": _PROFILE_SYSTEM_PROMPT},
-            {"role": "user", "content": _PROFILE_USER_TEMPLATE.format(text=text)},
-        ],
-        "response_format": {"type": "json_object"},
-    }
-    logger.info("Building paper profile: model=%s text_chars=%d", model, len(text))
+    try:
+        parsed, raw = LLMClient().call(
+            system=system_prompt,
+            user=_FIELD_USER_PROMPT_TEMPLATE.format(field=field, text=text),
+            json_mode=True,
+            timeout=60,
+            tool_name="extract_field",
+            input_chars=len(text),
+        )
+    except json.JSONDecodeError as e:
+        logger.error("Failed to parse LLM response for field=%r - returning empty. error=%s", field, e)
+        return [], ""
 
-    _start = time.time()
-    response = httpx.post(
-        f"{base_url}/chat/completions",
-        headers={"Authorization": f"Bearer {api_token}", "Content-Type": "application/json"},
-        json=payload,
-        timeout=90,
+    logger.info("LLM response (field=%r): %d chars", field, len(raw))
+    if _log_raw_llm_output():
+        logger.debug("Raw completion (field=%r): %s", field, raw)
+    return parsed.get(field) or [], raw
+
+
+def extract_insights(text: str) -> tuple[dict, str]:
+    user_message = _USER_PROMPT_TEMPLATE.format(text=text)
+    logger.info("Calling IONOS LLM: model=%s text_chars=%d", IONOS_MODEL, len(text))
+
+    parsed, raw_completion = LLMClient().call(
+        system=_SYSTEM_PROMPT,
+        user=user_message,
+        json_mode=False,
+        timeout=60,
+        tool_name="extract_insights",
+        input_chars=len(text),
     )
-    if response.is_error:
-        logger.error("IONOS API error (profile): status=%d body=%s", response.status_code, response.text)
-    response.raise_for_status()
-    _latency = time.time() - _start
-    _resp = response.json()
-    _usage = _resp.get("usage", {})
-    log_usage(
+
+    logger.info("LLM response received: %d chars", len(raw_completion))
+    if _log_raw_llm_output():
+        logger.debug("Raw model completion: %s", raw_completion)
+
+    result = {
+        "methods": parsed.get("methods") or [],
+        "results": parsed.get("results") or [],
+        "datasets": parsed.get("datasets") or [],
+        "limitations": parsed.get("limitations") or [],
+        "future_work": parsed.get("future_work") or [],
+        "debug_notes": parsed.get("debug_notes") or "",
+    }
+    return result, raw_completion
+
+
+def build_profile(text: str, paper_id: str = "") -> tuple[dict, str]:
+    logger.info("Building paper profile: model=%s text_chars=%d", IONOS_MODEL, len(text))
+
+    parsed, raw = LLMClient().call(
+        system=_PROFILE_SYSTEM_PROMPT,
+        user=_PROFILE_USER_TEMPLATE.format(text=text, paper_id=paper_id),
+        json_mode=True,
+        timeout=90,
         tool_name="build_profile",
-        model=model,
-        input_tokens=_usage.get("prompt_tokens", 0),
-        output_tokens=_usage.get("completion_tokens", 0),
-        total_tokens=_usage.get("total_tokens", 0),
-        latency_seconds=_latency,
         input_chars=len(text),
         paper_id=paper_id,
     )
 
-    raw = _resp["choices"][0]["message"]["content"].strip()
     logger.info("Profile LLM response: %d chars", len(raw))
-    logger.debug("Raw profile completion: %s", raw)
-
-    try:
-        parsed = json.loads(_strip_code_fences(raw))
-    except json.JSONDecodeError as e:
-        logger.exception("Failed to parse profile response as JSON: %s", e)
-        raise
+    if _log_raw_llm_output():
+        logger.debug("Raw profile completion: %s", raw)
 
     result = {
-        "paper_type":            parsed.get("paper_type") or "",
-        "research_problem":      parsed.get("research_problem") or "",
-        "main_contribution":     parsed.get("main_contribution") or "",
-        "methods_or_approach":   parsed.get("methods_or_approach") or "",
-        "key_findings":          parsed.get("key_findings") or "",
-        "paper_intent":          parsed.get("paper_intent") or "",
-        "core_insight":          parsed.get("core_insight") or "",
-        "paper_stance":          parsed.get("paper_stance") or "",
-        "distinctive_elements":  parsed.get("distinctive_elements") or [],
-        "datasets":              parsed.get("datasets") or [],
-        "limitations":           parsed.get("limitations") or [],
-        "future_work":           parsed.get("future_work") or [],
+        "paper_type": parsed.get("paper_type") or "",
+        "research_problem": parsed.get("research_problem") or "",
+        "main_contribution": parsed.get("main_contribution") or "",
+        "methods_or_approach": parsed.get("methods_or_approach") or "",
+        "key_findings": parsed.get("key_findings") or "",
+        "paper_intent": parsed.get("paper_intent") or "",
+        "core_insight": parsed.get("core_insight") or "",
+        "paper_stance": parsed.get("paper_stance") or "",
+        "distinctive_elements": parsed.get("distinctive_elements") or [],
+        "datasets": parsed.get("datasets") or [],
+        "limitations": parsed.get("limitations") or [],
+        "future_work": parsed.get("future_work") or [],
         "plain_english_summary": parsed.get("plain_english_summary") or "",
+        "supporting_paper_ids": parsed.get("supporting_paper_ids") or ([paper_id] if paper_id else []),
+        "citation_label": parsed.get("citation_label") or (f"[{paper_id}]" if paper_id else ""),
     }
 
-    empty_narrative = [k for k in ("research_problem", "main_contribution", "key_findings",
-                                   "paper_intent", "core_insight", "paper_stance",
-                                   "plain_english_summary") if not result[k]]
+    empty_narrative = [
+        k for k in (
+            "research_problem", "main_contribution", "key_findings",
+            "paper_intent", "core_insight", "paper_stance",
+            "plain_english_summary",
+        ) if not result[k]
+    ]
     if empty_narrative:
         logger.warning("Profile narrative fields returned empty: %s", empty_narrative)
 

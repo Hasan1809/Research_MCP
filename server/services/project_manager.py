@@ -76,6 +76,104 @@ def add_paper_to_project(name: str, paper_id: str, source: str) -> dict:
     return manifest
 
 
+def batch_add_papers_to_project(name: str, papers: list[dict]) -> dict:
+    """Add multiple papers to a project, saving the manifest once."""
+    slug = _slugify(name)
+    if not slug:
+        raise ValueError(f"Invalid project name: {name!r}")
+
+    path = _project_path(slug)
+    if os.path.exists(path):
+        manifest = _load_manifest(path)
+    else:
+        manifest = {
+            "name": slug,
+            "created": datetime.now().isoformat(),
+            "papers": [],
+        }
+        logger.info("Creating project %r during batch add", slug)
+
+    added = []
+    duplicates = []
+    skipped = []
+    failed = []
+    seen = {
+        (paper.get("paper_id"), paper.get("source"))
+        for paper in manifest.get("papers", [])
+    }
+
+    for index, ref in enumerate(papers or []):
+        try:
+            if not isinstance(ref, dict):
+                skipped.append({
+                    "index": index,
+                    "paper_id": "",
+                    "source": "",
+                    "reason": "paper reference must be an object",
+                })
+                continue
+
+            paper_id = str(ref.get("paper_id") or "").strip()
+            source = str(ref.get("source") or "").strip()
+            if not paper_id or not source:
+                skipped.append({
+                    "index": index,
+                    "paper_id": paper_id,
+                    "source": source,
+                    "reason": "missing paper_id or source",
+                })
+                continue
+
+            key = (paper_id, source)
+            entry = {"paper_id": paper_id, "source": source}
+            if key in seen:
+                duplicates.append({**entry, "reason": "already in project"})
+                continue
+
+            manifest["papers"].append({
+                "paper_id": paper_id,
+                "source": source,
+                "added": datetime.now().isoformat(),
+            })
+            seen.add(key)
+            added.append(entry)
+        except Exception as e:
+            failed.append({
+                "index": index,
+                "paper_id": str(ref.get("paper_id", "")) if isinstance(ref, dict) else "",
+                "source": str(ref.get("source", "")) if isinstance(ref, dict) else "",
+                "error": str(e),
+            })
+
+    if added or not os.path.exists(path):
+        _save_manifest(manifest)
+
+    logger.info(
+        "Batch add to project %r complete: input=%d added=%d duplicates=%d skipped=%d failed=%d",
+        slug,
+        len(papers or []),
+        len(added),
+        len(duplicates),
+        len(skipped),
+        len(failed),
+    )
+    return {
+        "project": slug,
+        "added": added,
+        "skipped": skipped,
+        "duplicates": duplicates,
+        "failed": failed,
+        "summary": {
+            "input_count": len(papers or []),
+            "added_count": len(added),
+            "duplicate_count": len(duplicates),
+            "skipped_count": len(skipped),
+            "failed_count": len(failed),
+            "paper_count": len(manifest.get("papers", [])),
+        },
+    }
+
+
 def remove_paper_from_project(name: str, paper_id: str, source: str) -> dict:
     """Remove a paper from a project. No-op if not present."""
     slug = _slugify(name)

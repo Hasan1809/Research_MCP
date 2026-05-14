@@ -2,6 +2,7 @@ import json
 import os
 import sys
 import types
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -33,22 +34,35 @@ def _ensure_namespace_package(name: str, path: Path) -> None:
 _ensure_namespace_package("services", SERVER_SERVICES_DIR)
 _ensure_namespace_package("utils", BASELINE_UTILS_DIR)
 
+from config import DATA_DIR, FULL_TEXT_CHAR_LIMIT, IONOS_MODEL, LLM_TEMPERATURE
 from services.analysis.experiment_suggester import suggest_experiments
 from services.analysis.gap_detector import detect_gaps
+from services.citations import (
+    generate_bibliography as generate_bibliography_service,
+    save_normalized_metadata,
+    save_search_metadata,
+)
 from services.documents.chunking import chunk_sections, chunk_text
 from services.documents.pdf_service import detect_sections_from_text, download_and_extract_text, load_cached, save_cached
 from services.extraction.llm_extractor import build_profile
+from services.paper_repository import load_profile, load_profile_or_insights, save_profile
+from services.project_manager import (
+    add_paper_to_project,
+    batch_add_papers_to_project,
+    create_project,
+    get_project_papers,
+    list_projects,
+)
 from services.retrieval.aggregator import fetch_papers
+from services.retrieval.semantic_scholar_service import resolve_pdf_url
 from services.retrieval.vector_store import query_chunks
 from langchain_baseline.utils.logger import get_logger, get_session_dir, init_logging, log_invocation
 from langchain_baseline.utils.usage_tracker import log_usage
 
 logger = get_logger(__name__)
 
-_PROFILES_DIR = ROOT_DIR / "data" / "profiles"
-_ANALYSIS_DIR = ROOT_DIR / "data" / "analysis"
-_INSIGHTS_DIR = ROOT_DIR / "data" / "insights"
-_MAX_FULL_TEXT_CHARS = int(os.environ.get("FULL_TEXT_CHAR_LIMIT", 160_000))
+_ANALYSIS_DIR = DATA_DIR / "analysis"
+_MAX_FULL_TEXT_CHARS = FULL_TEXT_CHAR_LIMIT
 
 _PROFILE_QUERIES = [
     "research problem motivation background introduction",
@@ -61,6 +75,33 @@ _PRIORITY_SECTION_KEYWORDS = {
     "abstract", "introduction", "conclusion", "conclusions",
     "discussion", "method", "methods", "approach", "related work",
 }
+
+
+def _paper_cache_path(source: str, paper_id: str) -> str:
+    return str(DATA_DIR / "papers" / source / f"{paper_id}.json")
+
+
+def _log_ingest_summary(
+    source: str,
+    paper_id: str,
+    text_length: int,
+    page_count: int,
+    section_count: int,
+    chunk_count: int,
+    section_chunk_count: int,
+) -> None:
+    logger.info(
+        "LangChain ingest summary: source=%s paper_id=%s text_chars=%d pages=%d "
+        "sections=%d flat_chunks=%d section_chunks=%d cache_path=%s",
+        source,
+        paper_id,
+        text_length,
+        page_count,
+        section_count,
+        chunk_count,
+        section_chunk_count,
+        _paper_cache_path(source, paper_id),
+    )
 
 
 def _get_full_text(cached: dict) -> str:
@@ -97,21 +138,6 @@ def _retrieve_profile_chunks(paper_id: str, source: str) -> list[dict]:
     return chunks
 
 
-def _load_profile_or_insights(paper_id: str, source: str) -> dict:
-    profile_path = _PROFILES_DIR / source / f"{paper_id}.json"
-    insights_path = _INSIGHTS_DIR / source / f"{paper_id}.json"
-
-    if profile_path.exists():
-        with open(profile_path, encoding="utf-8") as f:
-            return json.load(f)
-    if insights_path.exists():
-        with open(insights_path, encoding="utf-8") as f:
-            return json.load(f)
-    raise FileNotFoundError(
-        f"No profile or insights found for paper_id={paper_id!r} source={source!r}."
-    )
-
-
 def _normalize_papers_input(papers: Any) -> list[dict]:
     if isinstance(papers, str):
         try:
@@ -134,9 +160,24 @@ def _normalize_papers_input(papers: Any) -> list[dict]:
     return normalized
 
 
+def _normalize_paper_ids_input(paper_ids: Any) -> list[str] | None:
+    if paper_ids is None:
+        return None
+    if isinstance(paper_ids, str):
+        try:
+            parsed = json.loads(paper_ids)
+        except json.JSONDecodeError:
+            parsed = [part.strip() for part in paper_ids.split(",") if part.strip()]
+        paper_ids = parsed
+    if not isinstance(paper_ids, list):
+        raise ValueError("paper_ids must be a list, a JSON-encoded list, or a comma-separated string.")
+    return [str(paper_id) for paper_id in paper_ids if str(paper_id).strip()]
+
+
 def search_papers_impl(query: str, limit: int) -> list[dict]:
     logger.info("LangChain baseline search: query=%r limit=%d", query, limit)
     result = fetch_papers(query, limit)
+    save_search_metadata(result)
     log_invocation("lc_search_papers", {"query": query, "limit": limit}, output={
         "result_count": len(result),
     })
@@ -147,13 +188,23 @@ def ingest_paper_impl(paper_id: str, source: str) -> dict:
     logger.info("LangChain baseline ingest: paper_id=%r source=%r", paper_id, source)
     arguments = {"paper_id": paper_id, "source": source}
 
-    if source != "arxiv":
-        error = f"Unsupported source: {source}. Only 'arxiv' is supported."
+    if source not in {"arxiv", "semantic_scholar"}:
+        error = f"Unsupported source: {source}. Use 'arxiv' or 'semantic_scholar'."
         log_invocation("lc_ingest_paper", arguments, error=error)
         raise ValueError(error)
 
     cached = load_cached(source, paper_id)
     if cached is not None:
+        metadata = cached.get("metadata", {})
+        _log_ingest_summary(
+            source,
+            paper_id,
+            cached.get("text_length", 0),
+            metadata.get("page_count", 0),
+            len(cached.get("sections", [])),
+            cached.get("chunk_count", len(cached.get("chunks", []))),
+            len(cached.get("section_chunks", [])),
+        )
         result = {
             "paper_id": paper_id,
             "source": source,
@@ -164,12 +215,17 @@ def ingest_paper_impl(paper_id: str, source: str) -> dict:
         log_invocation("lc_ingest_paper", arguments, output=result)
         return result
 
-    pdf_url = f"https://arxiv.org/pdf/{paper_id}"
+    metadata = {}
+    if source == "arxiv":
+        pdf_url = f"https://arxiv.org/pdf/{paper_id}"
+    else:
+        pdf_url, metadata = resolve_pdf_url(paper_id)
     text = download_and_extract_text(pdf_url)
     chunks = chunk_text(text)
     structured = detect_sections_from_text(text)
     sections = structured.get("sections", [])
     section_chunks = chunk_sections(sections) if sections else []
+    structured_metadata = structured.get("metadata", {})
 
     cached_result = {
         "paper_id": paper_id,
@@ -181,9 +237,21 @@ def ingest_paper_impl(paper_id: str, source: str) -> dict:
         "chunks": chunks,
         "sections": sections,
         "section_chunks": section_chunks,
-        "metadata": structured.get("metadata", {}),
+        "metadata": structured_metadata,
     }
+    if metadata:
+        cached_result["semantic_scholar"] = metadata
     save_cached(source, paper_id, cached_result)
+    save_normalized_metadata(source, paper_id, {**metadata, "pdf_url": pdf_url})
+    _log_ingest_summary(
+        source,
+        paper_id,
+        len(text),
+        structured_metadata.get("page_count", 0),
+        len(sections),
+        len(chunks),
+        len(section_chunks),
+    )
 
     result = {
         "paper_id": paper_id,
@@ -197,19 +265,64 @@ def ingest_paper_impl(paper_id: str, source: str) -> dict:
     return result
 
 
+def batch_ingest_papers_impl(papers: list[dict]) -> dict:
+    """Ingest multiple papers concurrently."""
+    succeeded = []
+    failed = {}
+
+    if not papers:
+        log_invocation("lc_batch_ingest_papers", {"papers": papers}, output={
+            "success_count": 0,
+            "error_count": 0,
+            "succeeded": succeeded,
+            "failed": failed,
+        })
+        return {"succeeded": succeeded, "failed": failed}
+
+    max_workers = min(len(papers), 5)
+    logger.info("LangChain batch ingest started: papers=%d max_workers=%d", len(papers), max_workers)
+
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        futures = {
+            pool.submit(ingest_paper_impl, ref["paper_id"], ref["source"]): ref["paper_id"]
+            for ref in papers
+        }
+        for future in as_completed(futures):
+            paper_id = futures[future]
+            try:
+                future.result()
+                succeeded.append(paper_id)
+                logger.info("Ingest complete: paper_id=%r", paper_id)
+            except Exception as e:
+                failed[paper_id] = str(e)
+                logger.error("Ingest failed: paper_id=%r error=%s", paper_id, e)
+
+    logger.info(
+        "LangChain batch ingest complete: success_count=%d failure_count=%d",
+        len(succeeded),
+        len(failed),
+    )
+    log_invocation("lc_batch_ingest_papers", {"papers": papers}, output={
+        "success_count": len(succeeded),
+        "error_count": len(failed),
+        "succeeded": succeeded,
+        "failed": failed,
+    })
+    return {"succeeded": succeeded, "failed": failed}
+
+
 def build_paper_profile_impl(paper_id: str, source: str, force: bool = False) -> dict:
     logger.info("LangChain baseline profile: paper_id=%r source=%r", paper_id, source)
     arguments = {"paper_id": paper_id, "source": source, "force": force}
 
-    profile_path = _PROFILES_DIR / source / f"{paper_id}.json"
-    if profile_path.exists() and not force:
-        with open(profile_path, encoding="utf-8") as f:
-            cached_profile = json.load(f)
-        log_invocation("lc_build_paper_profile", arguments, output={
-            "path_used": "cached_profile",
-            "paper_id": paper_id,
-        })
-        return cached_profile
+    if not force:
+        cached_profile = load_profile(source, paper_id)
+        if cached_profile is not None:
+            log_invocation("lc_build_paper_profile", arguments, output={
+                "path_used": "cached_profile",
+                "paper_id": paper_id,
+            })
+            return cached_profile
 
     cached = load_cached(source, paper_id)
     if not cached:
@@ -249,10 +362,15 @@ def build_paper_profile_impl(paper_id: str, source: str, force: bool = False) ->
 
     profile, _ = build_profile(context_text, paper_id=paper_id)
     result = {"paper_id": paper_id, "source": source, **profile}
+    result["_meta"] = {
+        "context_path": path_used,
+        "context_chars": len(context_text),
+        "temperature": LLM_TEMPERATURE,
+        "model": IONOS_MODEL,
+        "profiled_at": datetime.now().isoformat(),
+    }
 
-    profile_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(profile_path, "w", encoding="utf-8") as f:
-        json.dump(result, f, indent=2)
+    save_profile(source, paper_id, result)
 
     log_invocation("lc_build_paper_profile", arguments, output={
         "path_used": path_used,
@@ -263,9 +381,175 @@ def build_paper_profile_impl(paper_id: str, source: str, force: bool = False) ->
     return result
 
 
+def batch_build_profiles_impl(papers: list[dict], force: bool = False) -> dict:
+    """Build profiles for multiple papers concurrently."""
+    profiles = {}
+    failed = {}
+
+    if not papers:
+        log_invocation("lc_batch_build_profiles", {"papers": papers, "force": force}, output={
+            "success_count": 0,
+            "error_count": 0,
+            "succeeded": [],
+            "failed": [],
+        })
+        return {"profiles": profiles, "failed": failed}
+
+    max_workers = min(len(papers), 5)
+    logger.info(
+        "LangChain batch profile build started: papers=%d max_workers=%d force=%s",
+        len(papers),
+        max_workers,
+        force,
+    )
+
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        futures = {
+            pool.submit(
+                build_paper_profile_impl,
+                ref["paper_id"],
+                ref["source"],
+                force,
+            ): ref["paper_id"]
+            for ref in papers
+        }
+        for future in as_completed(futures):
+            paper_id = futures[future]
+            try:
+                profiles[paper_id] = future.result()
+                logger.info("Profile complete: paper_id=%r", paper_id)
+            except Exception as e:
+                failed[paper_id] = str(e)
+                logger.error("Profile failed: paper_id=%r error=%s", paper_id, e)
+
+    logger.info(
+        "LangChain batch profile build complete: success_count=%d failure_count=%d",
+        len(profiles),
+        len(failed),
+    )
+    log_invocation("lc_batch_build_profiles", {"papers": papers, "force": force}, output={
+        "success_count": len(profiles),
+        "error_count": len(failed),
+        "succeeded": list(profiles.keys()),
+        "failed": list(failed.keys()),
+    })
+    return {"profiles": profiles, "failed": failed}
+
+
+def create_project_impl(name: str) -> dict:
+    """Create or return a saved research project."""
+    logger.info("LangChain baseline create project: name=%r", name)
+    arguments = {"name": name}
+    try:
+        result = create_project(name)
+        log_invocation("lc_create_project", arguments, output={
+            "name": result.get("name"),
+            "paper_count": len(result.get("papers", [])),
+        })
+        return result
+    except Exception as e:
+        log_invocation("lc_create_project", arguments, error=str(e))
+        raise
+
+
+def add_to_project_impl(name: str, paper_id: str, source: str) -> dict:
+    """Add one paper to a saved research project."""
+    logger.info(
+        "LangChain baseline add to project: name=%r paper_id=%r source=%r",
+        name,
+        paper_id,
+        source,
+    )
+    arguments = {"name": name, "paper_id": paper_id, "source": source}
+    try:
+        result = add_paper_to_project(name, paper_id, source)
+        log_invocation("lc_add_to_project", arguments, output={
+            "name": result.get("name"),
+            "paper_count": len(result.get("papers", [])),
+        })
+        return result
+    except Exception as e:
+        log_invocation("lc_add_to_project", arguments, error=str(e))
+        raise
+
+
+def batch_add_to_project_impl(name: str, papers: list[dict] | str) -> dict:
+    """Add multiple papers to a saved research project in one operation."""
+    papers = _normalize_papers_input(papers)
+    logger.info("LangChain baseline batch add to project: name=%r count=%d", name, len(papers))
+    arguments = {"name": name, "papers": papers}
+    try:
+        result = batch_add_papers_to_project(name, papers)
+        log_invocation("lc_batch_add_to_project", arguments, output=result)
+        return result
+    except Exception as e:
+        log_invocation("lc_batch_add_to_project", arguments, error=str(e))
+        raise
+
+
+def list_projects_impl() -> list[dict]:
+    """List saved research projects."""
+    logger.info("LangChain baseline list projects")
+    try:
+        result = list_projects()
+        log_invocation("lc_list_projects", {}, output={
+            "project_count": len(result),
+        })
+        return result
+    except Exception as e:
+        log_invocation("lc_list_projects", {}, error=str(e))
+        raise
+
+
+def generate_bibliography_impl(
+    project_name: str = "",
+    papers: list[dict] | str | None = None,
+    paper_ids: list[str] | str | None = None,
+    source: str = "arxiv",
+    format: str = "bibtex",
+    save: bool = True,
+) -> dict:
+    """Generate a bibliography from a project or explicit paper references."""
+    normalized_papers = _normalize_papers_input(papers) if papers else None
+    normalized_paper_ids = _normalize_paper_ids_input(paper_ids)
+    arguments = {
+        "project_name": project_name,
+        "papers": normalized_papers,
+        "paper_ids": normalized_paper_ids,
+        "source": source,
+        "format": format,
+        "save": save,
+    }
+    logger.info(
+        "LangChain baseline generate bibliography: project=%r format=%r",
+        project_name,
+        format,
+    )
+    try:
+        result = generate_bibliography_service(
+            project_name=project_name or None,
+            papers=normalized_papers,
+            paper_ids=normalized_paper_ids,
+            source=source,
+            format=format,
+            save=save,
+        )
+        log_invocation("lc_generate_bibliography", arguments, output={
+            "format": result.get("format"),
+            "included_count": len(result.get("included", [])),
+            "skipped_count": len(result.get("skipped", [])),
+            "artifact_path": result.get("artifact_path", ""),
+        })
+        return result
+    except Exception as e:
+        log_invocation("lc_generate_bibliography", arguments, error=str(e))
+        raise
+
+
 def detect_gaps_impl(papers: list[dict] | str = None, project: str = None) -> dict:
     if project:
-        raise NotImplementedError("Project-based lookup is not implemented in the LangChain baseline.")
+        papers = get_project_papers(project)
+        logger.info("LangChain baseline detect gaps from project=%r count=%d", project, len(papers))
     if not papers:
         raise ValueError("detect_research_gaps requires a papers list.")
     papers = _normalize_papers_input(papers)
@@ -273,7 +557,7 @@ def detect_gaps_impl(papers: list[dict] | str = None, project: str = None) -> di
         raise ValueError("At least 2 papers are required for gap detection.")
 
     arguments = {"papers": papers, "project": project}
-    profiles = [_load_profile_or_insights(ref["paper_id"], ref["source"]) for ref in papers]
+    profiles = [load_profile_or_insights(ref["source"], ref["paper_id"]) for ref in papers]
     result, _ = detect_gaps(profiles)
 
     _ANALYSIS_DIR.mkdir(parents=True, exist_ok=True)
@@ -291,9 +575,36 @@ def detect_gaps_impl(papers: list[dict] | str = None, project: str = None) -> di
     return result
 
 
-def suggest_experiments_impl(papers: list[dict] | str = None, project: str = None) -> dict:
+def _find_existing_gap_analysis(paper_ids: list[str]) -> dict | None:
+    sorted_ids = sorted(paper_ids)
+    for path in sorted(_ANALYSIS_DIR.glob("gap_analysis_*.json"), reverse=True):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            existing_ids = sorted(p["paper_id"] for p in data.get("papers", []))
+            if existing_ids == sorted_ids:
+                return data["analysis"]
+        except Exception:
+            continue
+
+    for path in sorted(_ANALYSIS_DIR.glob("lc_gap_analysis_*.json"), reverse=True):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            existing_ids = sorted(p["paper_id"] for p in data.get("papers", []))
+            if existing_ids == sorted_ids:
+                return data["analysis"]
+        except Exception:
+            continue
+    return None
+
+
+def suggest_experiments_impl(
+    papers: list[dict] | str = None,
+    project: str = None,
+    gap_analysis: dict = None,
+) -> dict:
     if project:
-        raise NotImplementedError("Project-based lookup is not implemented in the LangChain baseline.")
+        papers = get_project_papers(project)
+        logger.info("LangChain baseline suggest experiments from project=%r count=%d", project, len(papers))
     if not papers:
         raise ValueError("suggest_research_experiments requires a papers list.")
     papers = _normalize_papers_input(papers)
@@ -301,8 +612,17 @@ def suggest_experiments_impl(papers: list[dict] | str = None, project: str = Non
         raise ValueError("At least 2 papers are required for experiment suggestions.")
 
     arguments = {"papers": papers, "project": project}
-    profiles = [_load_profile_or_insights(ref["paper_id"], ref["source"]) for ref in papers]
-    gap_analysis, _ = detect_gaps(profiles)
+    profiles = [load_profile_or_insights(ref["source"], ref["paper_id"]) for ref in papers]
+    paper_ids = [ref["paper_id"] for ref in papers]
+    if gap_analysis is not None:
+        logger.info("LangChain baseline using provided gap analysis")
+    else:
+        gap_analysis = _find_existing_gap_analysis(paper_ids)
+        if gap_analysis is not None:
+            logger.info("LangChain baseline gap analysis cache hit for paper_ids=%s", sorted(paper_ids))
+        else:
+            logger.info("LangChain baseline gap analysis cache miss for paper_ids=%s", sorted(paper_ids))
+            gap_analysis, _ = detect_gaps(profiles)
     result, _ = suggest_experiments(gap_analysis, profiles)
 
     _ANALYSIS_DIR.mkdir(parents=True, exist_ok=True)
@@ -321,9 +641,16 @@ def suggest_experiments_impl(papers: list[dict] | str = None, project: str = Non
 
 
 __all__ = [
+    "add_to_project_impl",
+    "batch_add_to_project_impl",
+    "batch_build_profiles_impl",
+    "batch_ingest_papers_impl",
     "build_paper_profile_impl",
+    "create_project_impl",
     "detect_gaps_impl",
+    "generate_bibliography_impl",
     "ingest_paper_impl",
+    "list_projects_impl",
     "search_papers_impl",
     "suggest_experiments_impl",
     "get_logger",

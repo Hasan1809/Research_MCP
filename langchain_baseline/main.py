@@ -168,23 +168,60 @@ def create_orchestrator_llm(usage_handler: BaseCallbackHandler):
 def build_research_topic_prompt(topic: str, num_papers: int = DEFAULT_NUM_PAPERS) -> str:
     return f"""Execute this research workflow for: "{topic}"
 
-STEPS (execute silently, do not narrate each step):
+STEPS — execute every step in order, do not skip any:
 1. search_papers(query="{topic}", limit={num_papers + 2})
-2. Pick the {num_papers} most relevant arxiv papers
-3. For each: ingest_paper -> profile_paper
-4. detect_research_gaps(papers=[...])
-5. suggest_research_experiments(papers=[...])
+2. Pick the {num_papers} most relevant arxiv or semantic_scholar papers. Only select papers
+   whose title or abstract directly mentions the research topic.
+   Reject papers that are only loosely related by domain.
+3. Call batch_ingest_papers once with all selected papers as a list.
+   Use the paper_id and source exactly as returned by search_papers;
+   never pass a URL as paper_id.
+4. Call batch_build_profiles once with all papers as a list.
+5. Call batch_add_to_project once using project name "{topic}" and all
+   selected papers as a list. Never call add_to_project individually when
+   you have multiple papers.
+6. Call detect_research_gaps with all papers as a list.
+7. Call suggest_research_experiments with all papers as a list.
+   This step is mandatory. Do not stop after detect_research_gaps.
 
-OUTPUT FORMAT (use this EXACTLY):
+OUTPUT — after all seven steps are complete, write your response
+in this exact format and nothing else:
 
-{RESEARCH_OUTPUT_TEMPLATE.format(topic=topic)}
+## Papers Analyzed
+For each paper: paper_id, title, type, one sentence on core contribution.
+
+## Research Gaps
+For each gap from detect_research_gaps output:
+- Gap name
+- One sentence description
+- Which paper IDs support it
+
+## Methodological Gaps
+Same format as Research Gaps.
+
+## Contradictions
+For each contradiction: what conflicts, which paper IDs, one sentence
+on why it matters.
+
+## Suggested Experiments
+For each experiment from suggest_research_experiments output:
+- Title
+- One sentence hypothesis
+- One sentence method
+- Feasibility rating
+- Which paper IDs it builds on
+
+## Field Summary
+The field_summary string from detect_research_gaps output verbatim.
 
 RULES:
-- Do NOT add commentary before or after the tables
-- Do NOT explain what each tool does
-- Do NOT show raw JSON
-- Keep table cells to 1 sentence max
-- Total response must be under 800 words"""
+- Do not create any files or documents.
+- Do not add budget estimates, timelines, FTE counts, or resource requirements.
+- Do not add executive summaries, next steps, or collaboration sections.
+- Do not add any sections not listed in the OUTPUT format above.
+- Do not add commentary before or after the output.
+- Keep every field to one sentence maximum unless stated otherwise.
+- The tool outputs are the deliverable. Present them and stop."""
 
 
 def save_final_output(text: str) -> Path:
@@ -202,8 +239,10 @@ def create_agent(verbose: bool = True) -> AgentExecutor:
             "system",
             "You are a research assistant using tools to analyze academic papers. "
             "When the user gives a research topic, execute the full workflow silently: "
-            "search, select the most relevant arxiv papers, ingest, profile, detect gaps, "
-            "and suggest experiments. Do not stop after tool calls. After the tools are complete, "
+            "search, select the most relevant arxiv or semantic_scholar papers, batch ingest, "
+            "batch profile, batch add to a project, detect gaps, and suggest experiments. "
+            "Use paper_id and source exactly "
+            "as returned by search_papers, never a URL or placeholder. Do not stop after tool calls. After the tools are complete, "
             "you must always produce a final markdown answer that matches the exact structure "
             "requested by the user. Do not output raw JSON or narrate tool execution.",
         ),

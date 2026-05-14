@@ -2,6 +2,7 @@
 from services.project_manager import (
     create_project,
     add_paper_to_project,
+    batch_add_papers_to_project,
     list_projects,
 )
 from utils.logger import get_logger, log_invocation
@@ -54,6 +55,28 @@ def add_to_project_tool(name: str, paper_id: str, source: str) -> dict:
         return result
     except Exception as e:
         log_invocation("add_to_project_tool", arguments, error=str(e))
+        raise
+
+
+def batch_add_to_project_tool(name: str, papers: list[dict]) -> dict:
+    """
+    Add multiple papers to a project in one operation.
+
+    Args:
+        name: Project name. Will be slugified to match project manifests.
+        papers: List of {"paper_id": "...", "source": "..."} references.
+
+    Returns:
+        Structured result with added, skipped, duplicate, failed, and summary counts.
+    """
+    logger.info("Tool invoked: batch_add_to_project name=%r count=%d", name, len(papers or []))
+    arguments = {"name": name, "papers": papers}
+    try:
+        result = batch_add_papers_to_project(name, papers)
+        log_invocation("batch_add_to_project_tool", arguments, output=result)
+        return result
+    except Exception as e:
+        log_invocation("batch_add_to_project_tool", arguments, error=str(e))
         raise
 
 

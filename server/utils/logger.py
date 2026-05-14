@@ -10,6 +10,18 @@ _session_dir: str = ""
 _invocation_counter: int = 0
 
 
+def _env_bool(name: str, default: bool = False) -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _log_level() -> int:
+    name = os.environ.get("LOG_LEVEL", "INFO").strip().upper()
+    return getattr(logging, name, logging.INFO)
+
+
 def init_logging():
     global _initialized, _tools_dir, _session_dir
     if _initialized:
@@ -25,7 +37,7 @@ def init_logging():
     log_file = os.path.join(_session_dir, "main.log")
     fmt = "%(asctime)s %(levelname)s %(name)s: %(message)s"
     logging.basicConfig(
-        level=logging.DEBUG,
+        level=_log_level(),
         format=fmt,
         handlers=[
             logging.FileHandler(log_file),
@@ -36,9 +48,10 @@ def init_logging():
     # Suppress noisy third-party debug logs
     logging.getLogger("httpcore").setLevel(logging.WARNING)
     logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("urllib3").setLevel(logging.WARNING)
     logging.getLogger("chromadb").setLevel(logging.WARNING)
     logging.getLogger("asyncio").setLevel(logging.WARNING)
-    logging.getLogger("mcp.server.lowlevel.server").setLevel(logging.INFO)
+    logging.getLogger("mcp.server.lowlevel.server").setLevel(logging.WARNING)
 
 
 def get_logger(name: str) -> logging.Logger:
