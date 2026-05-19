@@ -61,6 +61,7 @@ from services.project_manager import (
     get_project_papers,
     list_projects,
 )
+from services.reports.project_report import generate_project_report
 from services.retrieval.aggregator import fetch_papers
 from services.retrieval.semantic_scholar_service import resolve_pdf_url
 from services.retrieval.vector_store import query_chunks
@@ -566,6 +567,48 @@ def generate_bibliography_impl(
         raise
 
 
+def generate_project_report_impl(
+    project: str,
+    format: str = "markdown",
+    gap_analysis_path: str | None = None,
+    validation_batch_path: str | None = None,
+    experiments_path: str | None = None,
+    bibliography_path: str | None = None,
+    include_bibliography: bool = True,
+) -> dict:
+    arguments = {
+        "project": project,
+        "format": format,
+        "gap_analysis_path": gap_analysis_path,
+        "validation_batch_path": validation_batch_path,
+        "experiments_path": experiments_path,
+        "bibliography_path": bibliography_path,
+        "include_bibliography": include_bibliography,
+    }
+    logger.info("LangChain baseline generate report: project=%r format=%r", project, format)
+    try:
+        result = generate_project_report(
+            project=project,
+            format=format,
+            gap_analysis_path=gap_analysis_path,
+            validation_batch_path=validation_batch_path,
+            experiments_path=experiments_path,
+            bibliography_path=bibliography_path,
+            include_bibliography=include_bibliography,
+        )
+        log_invocation("lc_generate_project_report", arguments, output={
+            "project": result.get("project"),
+            "report_path": result.get("report_path"),
+            "paper_count": result.get("paper_count"),
+            "gap_count": result.get("gap_count"),
+            "experiment_count": result.get("experiment_count"),
+        })
+        return result
+    except Exception as e:
+        log_invocation("lc_generate_project_report", arguments, error=str(e))
+        raise
+
+
 def detect_gaps_impl(papers: list[dict] | str = None, project: str = None) -> dict:
     if project:
         papers = get_project_papers(project)
@@ -761,6 +804,7 @@ __all__ = [
     "create_project_impl",
     "detect_gaps_impl",
     "generate_bibliography_impl",
+    "generate_project_report_impl",
     "ingest_paper_impl",
     "list_projects_impl",
     "search_papers_impl",

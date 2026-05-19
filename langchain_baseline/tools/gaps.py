@@ -8,7 +8,7 @@ def detect_research_gaps(papers: list[dict] | str | None = None, project: str = 
     """
     Identify research gaps across multiple profiled papers.
 
-    Requires profile_paper to have been called for each paper first.
+    Requires paper profiles to have been built for each paper first.
     Pass papers as a list of dicts or pass project as a saved project name.
     Requires at least 2 papers.
 

@@ -71,9 +71,8 @@ def build_paper_profile_tool(paper_id: str, source: str, force: bool = False) ->
     Example: build_paper_profile_tool(paper_id='2602.07652', source='arxiv')
     Example: build_paper_profile_tool(paper_id='649def34f8be52c8b66281af98ae884c09aef38b', source='semantic_scholar')
 
-    Must be called after ingest_paper_tool with the same paper_id and source.
+    Must be called after the paper has been ingested with the same paper_id and source.
     Must be called on at least 2 papers before detect_gaps_tool.
-    Do not call extract_paper_insights_tool instead of this - it is inferior.
     """
     logger.info("Tool invoked: build_paper_profile paper_id=%r source=%r", paper_id, source)
     arguments = {"paper_id": paper_id, "source": source}
@@ -90,7 +89,7 @@ def build_paper_profile_tool(paper_id: str, source: str, force: bool = False) ->
 
     cached = load_cached(source, paper_id)
     if not cached:
-        error = "Paper not found in cache. Run ingest_paper_tool first."
+        error = "Paper not found in cache. Run batch_ingest_papers_tool first."
         log_invocation("build_paper_profile_tool", arguments, error=error)
         raise FileNotFoundError(error)
 
@@ -146,18 +145,24 @@ def build_paper_profile_tool(paper_id: str, source: str, force: bool = False) ->
                 logger.info("No priority sections found - falling back to chunk retrieval")
             chunks = _retrieve_profile_chunks(paper_id, source)
             if not chunks:
-                error = "No indexed chunks found. Run index_paper_tool first."
-                log_invocation("build_paper_profile_tool", arguments, error=error)
-                raise ValueError(error)
-            chunk_indices = [c["chunk_index"] for c in chunks]
-            early = [i for i in chunk_indices if i <= 3]
-            late = [i for i in chunk_indices if i >= max(chunk_indices) - 3]
-            logger.info(
-                "Retrieved %d chunks: indices=%s (early=%s late=%s)",
-                len(chunks), chunk_indices, early, late,
-            )
-            context_text = "\n\n".join(c["text"] for c in chunks)
-            path_used = "chunk_retrieval"
+                logger.warning(
+                    "No indexed chunks found for %s/%s - using truncated full text fallback",
+                    source,
+                    paper_id,
+                )
+                context_text = full_text[:MAX_FULL_TEXT_CHARS]
+                path_used = "truncated_full_text"
+                chunk_indices = []
+            else:
+                chunk_indices = [c["chunk_index"] for c in chunks]
+                early = [i for i in chunk_indices if i <= 3]
+                late = [i for i in chunk_indices if i >= max(chunk_indices) - 3]
+                logger.info(
+                    "Retrieved %d chunks: indices=%s (early=%s late=%s)",
+                    len(chunks), chunk_indices, early, late,
+                )
+                context_text = "\n\n".join(c["text"] for c in chunks)
+                path_used = "chunk_retrieval"
 
     logger.info("Generating paper profile (path=%s)...", path_used)
     try:

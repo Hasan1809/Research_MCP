@@ -36,12 +36,16 @@ Rules:
 - Each experiment must directly address a specific identified gap.
 - Each experiment must cite the paper_ids or gap paper lists that motivate it.
 - Only cite paper_ids that appear in the provided active paper set. Never cite outside papers.
-- If support is unclear, use an empty builds_on list rather than inventing attribution.
+- Each experiment should build on at least one active project paper when possible.
+- If no active project paper supports an experiment, mark the idea narrowly and avoid presenting it as strongly grounded.
 - Experiments must be feasible for a research team with standard compute resources (not "train a 100B model from scratch").
 - Propose specific methods, baselines, and evaluation criteria.
 - Reference actual paper_ids when building on existing work.
+- Do not use outside validation papers as builds_on references.
 - Rate feasibility honestly: "high" means doable in weeks, "medium" in months, "low" means requires significant resources or novel techniques.
-- Suggest 3-5 experiments, prioritized by impact and feasibility.
+- Suggest no more experiments than requested, prioritized by impact and feasibility.
+- Do not create multiple experiments that only differ by wording, dataset, or scope label.
+- Prefer fewer, more distinct experiments when the validated gap set is small.
 - Do NOT suggest vague directions like "explore more". Each experiment must have a testable hypothesis.
 
 Return ONLY a valid JSON object with this structure:
@@ -65,6 +69,8 @@ Do not include any text outside the JSON object.\
 
 _EXPERIMENT_USER_TEMPLATE = """\
 Here is a gap analysis across {n} research papers, followed by short metadata for the active paper set.
+
+Requested experiment count: {requested_experiment_count}
 
 --- GAP ANALYSIS ---
 {gap_analysis_text}
@@ -211,6 +217,205 @@ def _filter_experiment_ids(result: dict, allowed_ids: set[str]) -> dict:
     return result
 
 
+def _profile_text(profile: dict) -> str:
+    return " ".join(
+        str(profile.get(key) or "")
+        for key in (
+            "paper_id",
+            "paper_type",
+            "research_problem",
+            "main_contribution",
+            "methods_or_approach",
+            "key_findings",
+            "future_work",
+            "limitations",
+            "plain_english_summary",
+        )
+    )
+
+
+def _load_grounding_profiles(papers: list[dict], paper_profiles: list[dict] | None = None) -> list[dict]:
+    provided = {
+        (profile.get("source"), profile.get("paper_id")): profile
+        for profile in paper_profiles or []
+    }
+    profiles = []
+    for ref in papers:
+        key = (ref.get("source"), ref.get("paper_id"))
+        profile = provided.get(key)
+        if profile is None:
+            stored = load_paper_metadata(ref.get("source"), ref.get("paper_id")) or {}
+            profile = {
+                "paper_id": ref.get("paper_id"),
+                "source": ref.get("source"),
+                "research_problem": stored.get("title", ""),
+                "main_contribution": stored.get("title", ""),
+            }
+        if profile:
+            profiles.append(profile)
+    return profiles
+
+
+def _best_grounding_ids(experiment: dict, papers: list[dict], profiles: list[dict]) -> list[str]:
+    query_tokens = _content_tokens(
+        " ".join(
+            str(experiment.get(key) or "")
+            for key in ("title", "addresses_gap", "hypothesis", "method")
+        )
+    )
+    if not query_tokens:
+        return []
+    scored = []
+    for profile in profiles:
+        pid = profile.get("paper_id")
+        if not pid:
+            continue
+        tokens = _content_tokens(_profile_text(profile))
+        score = _similarity(query_tokens, tokens)
+        if score > 0:
+            scored.append((score, pid))
+    scored.sort(reverse=True)
+    if scored:
+        return [pid for score, pid in scored[:3] if score >= 0.06] or [scored[0][1]]
+    return [ref.get("paper_id") for ref in papers[:1] if ref.get("paper_id")]
+
+
+def _ground_experiments(result: dict, papers: list[dict], paper_profiles: list[dict] | None = None) -> tuple[dict, dict]:
+    profiles = _load_grounding_profiles(papers, paper_profiles)
+    weak_count = 0
+    filled_count = 0
+    for experiment in result.get("experiments") or []:
+        flags = list(experiment.get("quality_flags") or [])
+        if not experiment.get("builds_on"):
+            inferred = _best_grounding_ids(experiment, papers, profiles)
+            if inferred:
+                experiment["builds_on"] = inferred
+                experiment["grounding_status"] = "inferred_project_papers"
+                filled_count += 1
+                flags.append("inferred_project_grounding")
+            else:
+                experiment["grounding_status"] = "weak"
+                experiment["warning"] = "No direct project paper grounding found."
+                flags.append("missing_project_grounding")
+                weak_count += 1
+        else:
+            experiment["grounding_status"] = "project_papers"
+        if not experiment.get("baselines"):
+            flags.append("missing_baselines")
+        if not experiment.get("datasets"):
+            flags.append("missing_dataset")
+        experiment["quality_flags"] = sorted(set(flags))
+    return result, {
+        "grounding_inferred_count": filled_count,
+        "weakly_grounded_experiment_count": weak_count,
+    }
+
+
+def _gap_count(gap_analysis: dict | None) -> int:
+    return (
+        len((gap_analysis or {}).get("research_gaps", []))
+        + len((gap_analysis or {}).get("methodological_gaps", []))
+    )
+
+
+def _requested_experiment_count(included_gap_count: int | None) -> int:
+    if included_gap_count is None:
+        return 5
+    if included_gap_count <= 0:
+        return 0
+    if included_gap_count == 1:
+        return 2
+    if included_gap_count == 2:
+        return 4
+    return 5
+
+
+def _normalize_text(value: str) -> str:
+    import re
+
+    return " ".join(re.findall(r"[a-z0-9]+", (value or "").lower()))
+
+
+def _content_tokens(value: str) -> set[str]:
+    stop = {
+        "a", "an", "and", "are", "as", "by", "for", "from", "in", "is", "it",
+        "of", "on", "or", "the", "to", "under", "with", "without",
+    }
+    return {token for token in _normalize_text(value).split() if token not in stop and len(token) > 2}
+
+
+def _method_keywords(experiment: dict) -> set[str]:
+    text = " ".join(
+        str(experiment.get(key) or "")
+        for key in ("title", "addresses_gap", "hypothesis", "method")
+    )
+    keywords = {
+        "explainability", "interpretability", "shap", "lime", "prompt", "injection",
+        "tool", "tools", "workflow", "multi", "agent", "users", "human", "benchmark",
+        "simulation", "deployment", "detector", "detection", "mitigation", "warning",
+    }
+    return _content_tokens(text) & keywords
+
+
+def _similarity(left: set[str], right: set[str]) -> float:
+    if not left or not right:
+        return 0.0
+    return len(left & right) / len(left | right)
+
+
+def _experiment_quality(experiment: dict) -> tuple[int, int, int, int]:
+    feasibility_rank = {"high": 3, "medium": 2, "low": 1}
+    method_len = len(str(experiment.get("method") or ""))
+    hypothesis_len = len(str(experiment.get("hypothesis") or ""))
+    builds_on_len = len(experiment.get("builds_on") or [])
+    feasibility = feasibility_rank.get(str(experiment.get("feasibility") or "").lower(), 0)
+    return (method_len + hypothesis_len, builds_on_len, feasibility, len(str(experiment.get("title") or "")))
+
+
+def _experiments_are_duplicates(left: dict, right: dict) -> bool:
+    left_title = _normalize_text(left.get("title", ""))
+    right_title = _normalize_text(right.get("title", ""))
+    if left_title and left_title == right_title:
+        return True
+
+    left_gap = _normalize_text(left.get("addresses_gap", ""))
+    right_gap = _normalize_text(right.get("addresses_gap", ""))
+    same_gap = bool(left_gap and right_gap and left_gap == right_gap)
+    method_similarity = _similarity(_method_keywords(left), _method_keywords(right))
+    hypothesis_similarity = _similarity(
+        _content_tokens(left.get("hypothesis", "")),
+        _content_tokens(right.get("hypothesis", "")),
+    )
+    title_similarity = _similarity(_content_tokens(left.get("title", "")), _content_tokens(right.get("title", "")))
+    return same_gap and (method_similarity >= 0.55 or hypothesis_similarity >= 0.45 or title_similarity >= 0.55)
+
+
+def _dedupe_experiments(result: dict, requested_count: int) -> tuple[dict, dict]:
+    experiments = result.get("experiments") or []
+    deduped: list[dict] = []
+    for experiment in experiments:
+        duplicate_index = None
+        for index, kept in enumerate(deduped):
+            if _experiments_are_duplicates(experiment, kept):
+                duplicate_index = index
+                break
+        if duplicate_index is None:
+            deduped.append(experiment)
+        elif _experiment_quality(experiment) > _experiment_quality(deduped[duplicate_index]):
+            deduped[duplicate_index] = experiment
+
+    final = deduped[:requested_count] if requested_count > 0 else []
+    output = dict(result)
+    output["experiments"] = final
+    metadata = {
+        "requested_experiment_count": requested_count,
+        "raw_experiment_count": len(experiments),
+        "deduplicated_experiment_count": len(deduped),
+        "final_experiment_count": len(final),
+    }
+    return output, metadata
+
+
 def suggest_experiments(
     gap_analysis: dict,
     paper_profiles: list[dict] | None = None,
@@ -218,6 +423,7 @@ def suggest_experiments(
     papers: list[dict] | None = None,
     compact: bool = True,
     paper_metadata: list[dict] | None = None,
+    requested_experiment_count: int = 5,
 ) -> tuple[dict, str]:
     active_papers = papers or paper_profiles or []
     allowed_ids = _paper_id_set(active_papers)
@@ -235,6 +441,7 @@ def suggest_experiments(
 
     user_message = _EXPERIMENT_USER_TEMPLATE.format(
         n=len(active_papers),
+        requested_experiment_count=requested_experiment_count,
         gap_analysis_text=gap_text,
         paper_metadata_text=paper_context_text,
     )
@@ -260,7 +467,11 @@ def suggest_experiments(
         "Experiment suggestions complete: count=%d",
         len(parsed.get("experiments", [])),
     )
-    return _filter_experiment_ids(parsed, allowed_ids), raw
+    filtered = _filter_experiment_ids(parsed, allowed_ids)
+    grounded, grounding_metadata = _ground_experiments(filtered, active_papers, paper_profiles)
+    deduped, dedupe_metadata = _dedupe_experiments(grounded, requested_experiment_count)
+    deduped["_meta"] = {**deduped.get("_meta", {}), **dedupe_metadata, **grounding_metadata}
+    return deduped, raw
 
 
 def suggest_experiments_for_papers(
@@ -322,15 +533,61 @@ def suggest_experiments_for_papers(
                 )
             else:
                 validation_metadata["validation_recommendation"] = (
-                    "Batch validation found no gaps marked use_for_experiments=true; experiment prompt will use an empty validated gap set."
+                    "No experiments were generated because all detected gaps were validated as already addressed by external literature. "
+                    "Consider expanding the paper set, detecting more specific gaps, or manually refining candidate gaps."
                 )
-                logger.warning(validation_metadata["validation_recommendation"])
+                logger.warning(
+                    "No validated gaps available for experiment generation; skipping LLM call."
+                )
         else:
             validation_metadata["validation_recommendation"] = (
                 "No batch validation summary found; proceeding with unvalidated gaps. "
-                "Run batch_validate_gaps_tool(project=..., max_workers=2) to use validated/refined gaps."
+                "Run start_batch_validate_gaps_job(project=..., max_workers=2) to use validated/refined gaps."
             )
             logger.info(validation_metadata["validation_recommendation"])
+
+    if (
+        compact
+        and project
+        and validation_metadata.get("validation_used")
+        and validation_metadata.get("included_gap_count") == 0
+    ):
+        gap_count = _gap_count(gap_analysis)
+        empty_result = {
+            "experiments": [],
+            "_meta": {
+                "requested_experiment_count": 0,
+                "raw_experiment_count": 0,
+                "deduplicated_experiment_count": 0,
+                "final_experiment_count": 0,
+            },
+        }
+        save_path = save_experiment_suggestions(
+            papers,
+            gap_analysis,
+            empty_result,
+            gap_analysis_path=gap_analysis_path,
+            validation_metadata=validation_metadata,
+        )
+        return {
+            "gaps": gap_analysis,
+            "experiments": [],
+            "experiment_count": 0,
+            "gap_count": gap_count,
+            "gap_analysis_path": gap_analysis_path,
+            "gap_source": gap_source,
+            "project": project,
+            "save_path": save_path,
+            "active_paper_count": len(papers),
+            "paper_count": len(papers),
+            "subset_used": False,
+            "compact": compact,
+            "error": None,
+            "status": "no_validated_gaps",
+            "recommended_next_step": validation_metadata["validation_recommendation"],
+            **empty_result["_meta"],
+            **validation_metadata,
+        }
 
     if not compact and profiles is None:
         profiles = [
@@ -340,12 +597,18 @@ def suggest_experiments_for_papers(
 
     metadata = _metadata_for_papers(papers, profiles)
     try:
+        requested_count = _requested_experiment_count(
+            validation_metadata.get("included_gap_count")
+            if validation_metadata.get("validation_used")
+            else _gap_count(gap_analysis)
+        )
         result, raw = suggest_experiments(
             gap_analysis,
             profiles,
             papers=papers,
             compact=compact,
             paper_metadata=metadata,
+            requested_experiment_count=requested_count,
         )
     except httpx.TimeoutException as e:
         logger.error("Experiment suggestion timed out: %s", e)
@@ -374,10 +637,8 @@ def suggest_experiments_for_papers(
         gap_analysis_path=gap_analysis_path,
         validation_metadata=validation_metadata,
     )
-    gap_count = (
-        len((gap_analysis or {}).get("research_gaps", []))
-        + len((gap_analysis or {}).get("methodological_gaps", []))
-    )
+    gap_count = _gap_count(gap_analysis)
+    experiment_meta = result.get("_meta", {})
     return {
         "gaps": gap_analysis,
         "experiments": result.get("experiments", []),
@@ -393,5 +654,6 @@ def suggest_experiments_for_papers(
         "compact": compact,
         "error": None,
         "status": "succeeded",
+        **experiment_meta,
         **validation_metadata,
     }

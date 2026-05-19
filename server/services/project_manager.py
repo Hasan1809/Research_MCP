@@ -33,23 +33,48 @@ def _save_manifest(manifest: dict) -> None:
     logger.info("Saved project manifest: %s", path)
 
 
-def create_project(name: str) -> dict:
+def create_project(name: str, overwrite: bool = False) -> dict:
     """Create a new project manifest. Raises ValueError if name is invalid."""
     slug = _slugify(name)
     if not slug:
         raise ValueError(f"Invalid project name: {name!r}")
     path = _project_path(slug)
-    if os.path.exists(path):
+    existed = os.path.exists(path)
+    if existed and not overwrite:
         logger.info("Project %r already exists — returning existing manifest", slug)
-        return _load_manifest(path)
+        manifest = _load_manifest(path)
+        manifest["reused_existing"] = True
+        return manifest
     manifest = {
         "name": slug,
         "created": datetime.now().isoformat(),
         "papers": [],
+        "reused_existing": False,
+        "overwritten": bool(existed and overwrite),
     }
     _save_manifest(manifest)
     logger.info("Created project %r", slug)
     return manifest
+
+
+def clear_project(name: str) -> dict:
+    """Clear all papers from an existing project manifest."""
+    slug = _slugify(name)
+    path = _project_path(slug)
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"Project {slug!r} not found.")
+    manifest = _load_manifest(path)
+    removed_count = len(manifest.get("papers", []))
+    manifest["papers"] = []
+    manifest["cleared_at"] = datetime.now().isoformat()
+    _save_manifest(manifest)
+    logger.info("Cleared project %r removed=%d", slug, removed_count)
+    return {
+        "project": slug,
+        "removed_count": removed_count,
+        "paper_count": 0,
+        "manifest": manifest,
+    }
 
 
 def add_paper_to_project(name: str, paper_id: str, source: str) -> dict:

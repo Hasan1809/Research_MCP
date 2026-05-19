@@ -177,18 +177,20 @@ STEPS — execute every step in order, do not skip any:
    Use the paper_id and source exactly as returned by search_papers;
    never pass a URL as paper_id.
 4. Call start_batch_build_profiles_job once with all papers as a list and max_workers=2.
-   Poll get_job_status(job_id) until status is completed, then call
-   get_job_result(job_id). Do not use the synchronous batch_build_profiles
-   tool for larger batches.
+   Poll get_job_status(job_id, wait_seconds=180) until status is completed, then call
+   get_job_result(job_id). Do not start other profile-building work while
+   the job is running.
 5. Call batch_add_to_project once using project name "{topic}" and all
-   selected papers as a list. Never call add_to_project individually when
-   you have multiple papers.
+   selected papers as a list.
 6. Call detect_research_gaps(project="{topic}").
 7. Optionally call start_batch_validate_gaps_job(project="{topic}", max_workers=2)
-   when validated gaps are needed before experiments. Poll get_job_status(job_id)
+   when validated gaps are needed before experiments. Poll get_job_status(job_id, wait_seconds=180)
    until completed, then call get_job_result(job_id).
 8. Call suggest_research_experiments(project="{topic}", compact=True).
-   This step is mandatory. Do not stop after detect_research_gaps.
+   This step is mandatory. It must use only included/refined validated gaps when validation
+   is available. If all gaps are already addressed, do not invent experiments.
+9. Call generate_bibliography(project_name="{topic}", format="bibtex", save=True).
+10. Call generate_project_report(project="{topic}") and include the returned report_path in the final answer.
 
 OUTPUT — after all required steps are complete, write your response
 in this exact format and nothing else:
@@ -220,8 +222,11 @@ For each experiment from suggest_research_experiments output:
 ## Field Summary
 The field_summary string from detect_research_gaps output verbatim.
 
+## Report
+The report_path returned by generate_project_report.
+
 RULES:
-- Do not create any files or documents.
+- Do not create any files or documents except through explicit tools such as generate_project_report.
 - If asked to validate a gap after this workflow, call validate_research_gap(gap=<gap text>, project="{topic}").
 - Do not add budget estimates, timelines, FTE counts, or resource requirements.
 - Do not add executive summaries, next steps, or collaboration sections.
@@ -262,7 +267,7 @@ def create_agent(verbose: bool = True) -> AgentExecutor:
         agent=agent,
         tools=TOOLS,
         verbose=verbose,
-        max_iterations=12,
+        max_iterations=14,
         early_stopping_method="generate",
     )
 

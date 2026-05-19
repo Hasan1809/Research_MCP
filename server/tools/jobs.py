@@ -4,7 +4,6 @@ from services.jobs.job_manager import (
     cancel_job,
     get_job_result,
     get_job_status,
-    list_jobs,
     start_batch_build_profiles_job,
     start_batch_validate_gaps_job,
 )
@@ -22,9 +21,7 @@ def start_batch_build_profiles_job_tool(
     Start a long-running batch profile build as a background job.
 
     This returns immediately with a job_id so the client can poll progress using
-    get_job_status_tool instead of waiting for the full batch to finish. Prefer
-    this tool over batch_build_profiles_tool for multi-paper batches in Claude
-    Desktop.
+    get_job_status_tool instead of waiting for the full batch to finish.
     """
     arguments = {
         "paper_count": len(papers or []),
@@ -83,23 +80,39 @@ def start_batch_validate_gaps_job_tool(
     return result
 
 
-def get_job_status_tool(job_id: str) -> dict:
+def get_job_status_tool(
+    job_id: str,
+    wait_seconds: int = 180,
+    poll_interval_seconds: int = 5,
+) -> dict:
     """
     Check progress of a background job started by a long-running tool.
 
     Returns completed, failed, pending counts, partial results, recent errors,
-    and current status.
+    active items, and current status. By default this waits up to 180 seconds
+    before returning, so Claude Desktop does not spam quick status checks while
+    long LLM/search calls are still in flight. Set wait_seconds=0 for an
+    immediate snapshot.
     """
-    result = get_job_status(job_id)
+    result = get_job_status(
+        job_id,
+        wait_seconds=wait_seconds,
+        poll_interval_seconds=poll_interval_seconds,
+    )
     log_invocation(
         "get_job_status_tool",
-        {"job_id": job_id},
+        {
+            "job_id": job_id,
+            "wait_seconds": wait_seconds,
+            "poll_interval_seconds": poll_interval_seconds,
+        },
         output={
             "job_id": result.get("job_id"),
             "status": result.get("status"),
             "completed": result.get("completed"),
             "failed": result.get("failed"),
             "pending": result.get("pending"),
+            "waited_seconds": result.get("waited_seconds"),
         },
     )
     return result
@@ -123,18 +136,6 @@ def get_job_result_tool(job_id: str) -> dict:
         },
     )
     return result
-
-
-def list_jobs_tool(status: str | None = None, limit: int = 20) -> dict:
-    """List recent background jobs, optionally filtered by status."""
-    result = list_jobs(status=status, limit=limit)
-    log_invocation(
-        "list_jobs_tool",
-        {"status": status, "limit": limit},
-        output={"count": result.get("count")},
-    )
-    return result
-
 
 def cancel_job_tool(job_id: str) -> dict:
     """

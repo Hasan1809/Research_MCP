@@ -5,7 +5,6 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "server"))
 
 from services.analysis import gap_validator
-from tools import batch_validate_gaps as batch_validate_gaps_tool_module
 
 
 def _papers():
@@ -63,6 +62,10 @@ def _validation_result(gap, status, refined_gap=""):
                 "source": "semantic_scholar",
                 "title": f"Evidence for {gap}",
                 "classification": "partially_addresses_gap",
+                "score": 0.62,
+                "matched_facets": ["LLM agents", "security"],
+                "missing_facets": ["real-world users"],
+                "decision_reason": "Partial evidence only.",
                 "already_in_project": False,
             }
         ],
@@ -106,6 +109,12 @@ def test_batch_validate_loads_cached_gap_analysis_and_validates_all_gaps(tmp_pat
     assert len(calls) == 3
     assert os.path.exists(result["batch_artifact_path"])
     assert all(os.path.exists(item["artifact_path"]) for item in result["validated_gaps"])
+    method_gap = next(item for item in result["validated_gaps"] if item["status"] == "partially_addressed")
+    assert method_gap["use_for_experiments"] is True
+    assert method_gap["evidence_summary"][0]["score"] == 0.62
+    assert method_gap["evidence_summary"][0]["missing_facets"] == ["real-world users"]
+    saved_batch = json.loads(open(result["batch_artifact_path"], encoding="utf-8").read())
+    assert saved_batch["batch_artifact_path"] == result["batch_artifact_path"]
 
 
 def test_batch_validate_continues_when_one_gap_fails(tmp_path, monkeypatch):
@@ -141,26 +150,3 @@ def test_use_for_experiments_rules():
     assert gap_validator.gap_use_for_experiments("too_broad", "") is False
     assert gap_validator.gap_use_for_experiments("too_broad", "refined") is True
     assert gap_validator.gap_use_for_experiments("insufficient_evidence") is False
-
-
-def test_batch_validate_tool_wrapper_returns_compact_summary(tmp_path, monkeypatch):
-    result = {
-        "project": "proj",
-        "gap_count": 1,
-        "validated_count": 1,
-        "failed_count": 0,
-        "status_counts": {"confirmed_candidate_gap": 1},
-        "batch_artifact_path": str(tmp_path / "batch.json"),
-    }
-    monkeypatch.setattr(
-        batch_validate_gaps_tool_module,
-        "batch_validate_gaps",
-        lambda **kwargs: result,
-    )
-    monkeypatch.setattr(
-        batch_validate_gaps_tool_module,
-        "log_invocation",
-        lambda *_args, **_kwargs: None,
-    )
-
-    assert batch_validate_gaps_tool_module.batch_validate_gaps_tool("proj") == result

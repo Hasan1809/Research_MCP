@@ -10,7 +10,7 @@ def search_papers_tool(query: str, limit: int) -> list[dict]:
     Search for academic papers across arXiv and Semantic Scholar.
 
     Returns papers with paper_id, title, abstract, year, authors, source.
-    Use the paper_id and source from results to call ingest_paper_tool.
+    Use the paper_id and source from results to call batch_ingest_papers_tool.
     Papers with source='arxiv' or source='semantic_scholar' can be ingested.
     """
     logger.info("Tool invoked: query=%r limit=%d", query, limit)

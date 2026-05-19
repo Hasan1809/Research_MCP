@@ -10,7 +10,7 @@ logger = get_logger(__name__)
 def batch_ingest_papers_tool(papers: list[dict], max_workers: int = None) -> dict:
     """
     Download and process multiple paper PDFs concurrently.
-    Faster than calling ingest_paper_tool one at a time.
+    Ingest papers concurrently.
 
     papers must be a list of dicts with paper_id and source:
       [{"paper_id": "2602.07652", "source": "arxiv"}, ...]

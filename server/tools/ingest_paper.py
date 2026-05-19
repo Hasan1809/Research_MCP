@@ -51,7 +51,7 @@ def ingest_paper_tool(paper_id: str, source: str) -> dict:
     Example: ingest_paper_tool(paper_id='649def34f8be52c8b66281af98ae884c09aef38b', source='semantic_scholar')
 
     Caches the result so subsequent calls with the same paper_id are instant.
-    Must be called before build_paper_profile_tool or index_paper_tool.
+    Used by batch_ingest_papers_tool before profile-building jobs.
     """
     logger.info("Tool invoked: ingest_paper paper_id=%r source=%r", paper_id, source)
     arguments = {"paper_id": paper_id, "source": source}

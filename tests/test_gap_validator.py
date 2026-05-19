@@ -81,9 +81,90 @@ def test_classification_categories():
     assert partial["classification"] == "partially_addresses_gap"
     assert related["classification"] == "related_but_not_addressing"
     assert irrelevant["classification"] == "irrelevant"
+    assert {"score", "matched_facets", "missing_facets", "decision_reason"} <= set(direct)
 
 
-def test_validation_with_mocked_search_results_and_artifact(tmp_path, monkeypatch):
+def test_general_cybersecurity_does_not_directly_address_llm_agent_gap():
+    gap = "Human-centered evaluation of LLM agent security for real-world users"
+
+    result = gap_validator.classify_validation_paper(
+        gap,
+        _paper(
+            "kernel",
+            "SyzScope: Revealing High-Risk Security Impacts of Fuzzer-Exposed Bugs in Linux kernel",
+            "We study kernel fuzzing and vulnerability impact analysis for operating systems.",
+        ),
+    )
+
+    assert result["classification"] in {"related_but_not_addressing", "irrelevant"}
+    assert result["classification"] != "directly_addresses_gap"
+
+
+def test_generic_real_world_adjacent_domains_do_not_close_llm_agent_deployment_gap():
+    gap = "Evaluation of LLM-integrated app systems in real-world, dynamic environments"
+    adjacent = [
+        _paper(
+            "driver",
+            "A Dynamic-System-Based Approach to Modeling Driver Movements Across Managed Lane Interfaces",
+            "We evaluate real-world driver behavior in dynamic transportation environments.",
+        ),
+        _paper(
+            "robot",
+            "Robot Policy Evaluation for Sim-to-Real Transfer",
+            "We benchmark robotics policy evaluation under sim-to-real deployment constraints.",
+        ),
+        _paper(
+            "hci",
+            "Reporting and Reviewing LLM-Integrated Systems in HCI",
+            "We discuss reporting practices for HCI systems, without security attacks or vulnerabilities.",
+        ),
+    ]
+
+    classifications = [
+        gap_validator.classify_validation_paper(
+            gap,
+            paper,
+            project_context="llm agent security",
+        )["classification"]
+        for paper in adjacent
+    ]
+
+    assert "directly_addresses_gap" not in classifications
+
+
+def test_llm_agent_benchmark_without_users_partially_addresses_human_gap():
+    gap = "Human-centered evaluation of LLM agent security for real-world users"
+
+    result = gap_validator.classify_validation_paper(
+        gap,
+        _paper(
+            "benchmark",
+            "Benchmarking LLM agent security defenses",
+            "We evaluate tool-using LLM agents with a simulated security benchmark but do not run a user study.",
+        ),
+    )
+
+    assert result["classification"] == "partially_addresses_gap"
+    assert any("real-world" in facet or "users" in facet for facet in result["missing_facets"])
+
+
+def test_llm_agent_user_study_directly_addresses_human_gap():
+    gap = "Human-centered evaluation of LLM agent security for real-world users"
+
+    result = gap_validator.classify_validation_paper(
+        gap,
+        _paper(
+            "user-study",
+            "Human-centered real-world evaluation of LLM agent security for users",
+            "We evaluate language model agents in realistic tool-use security tasks with non-technical users and participants.",
+        ),
+    )
+
+    assert result["classification"] == "directly_addresses_gap"
+    assert result["score"] >= 0.72
+
+
+def test_two_strong_matches_close_gap_with_medium_confidence(tmp_path, monkeypatch):
     gap = "Lack of real-world evaluation of LLM agent security defenses"
     search_results = [
         _paper(
@@ -100,12 +181,13 @@ def test_validation_with_mocked_search_results_and_artifact(tmp_path, monkeypatc
     ]
 
     monkeypatch.setattr(gap_validator, "_VALIDATION_DIR", tmp_path)
+    monkeypatch.setattr(gap_validator, "get_project_papers", lambda project: [])
     monkeypatch.setattr(gap_validator, "fetch_papers", lambda query, limit: search_results)
 
     result = gap_validator.validate_gap(gap, max_results=5)
 
     assert result["status"] == "already_addressed"
-    assert result["confidence"] == "high"
+    assert result["confidence"] == "medium"
     assert result["results_found"] == 2
     assert result["relevant_results"] == 2
     assert result["artifact_path"]
@@ -114,6 +196,96 @@ def test_validation_with_mocked_search_results_and_artifact(tmp_path, monkeypatc
     saved = json.loads(open(result["artifact_path"], encoding="utf-8").read())
     assert saved["gap"] == gap
     assert saved["validation_papers"][0]["classification"] == "directly_addresses_gap"
+    assert {"score", "matched_facets", "missing_facets", "decision_reason"} <= set(
+        saved["validation_papers"][0]
+    )
+
+
+def test_three_strong_external_matches_can_close_gap(tmp_path, monkeypatch):
+    gap = "Lack of real-world evaluation of LLM agent security defenses"
+    search_results = [
+        _paper(
+            "external-direct-1",
+            "Real-world evaluation of LLM agent security defenses",
+            "We evaluate deployed tool-use LLM agent security defenses in production.",
+        ),
+        _paper(
+            "external-direct-2",
+            "Production evaluation for LLM agent security defenses",
+            "This empirical study evaluates language model agent defenses in real-world deployments.",
+            source="arxiv",
+        ),
+        _paper(
+            "external-direct-3",
+            "Field study of LLM agent security defenses for tool use",
+            "We study real-world deployed LLM agents and evaluate security defenses for tool-use attacks.",
+        ),
+    ]
+
+    monkeypatch.setattr(gap_validator, "_VALIDATION_DIR", tmp_path)
+    monkeypatch.setattr(gap_validator, "get_project_papers", lambda project: [])
+    monkeypatch.setattr(gap_validator, "fetch_papers", lambda query, limit: search_results)
+
+    result = gap_validator.validate_gap(gap, max_results=5)
+
+    assert result["status"] == "already_addressed"
+    assert result["confidence"] == "high"
+
+
+def test_two_weak_related_matches_do_not_produce_already_addressed(tmp_path, monkeypatch):
+    gap = "Human-centered evaluation of LLM agent security for real-world users"
+    search_results = [
+        _paper(
+            "kernel",
+            "Kernel fuzzing for security vulnerabilities",
+            "We evaluate Linux kernel vulnerability detection.",
+        ),
+        _paper(
+            "vehicles",
+            "Connected vehicle security vulnerability detection",
+            "We study attacks and defenses in VANET and IoT systems.",
+        ),
+    ]
+
+    monkeypatch.setattr(gap_validator, "_VALIDATION_DIR", tmp_path)
+    monkeypatch.setattr(gap_validator, "fetch_papers", lambda query, limit: search_results)
+
+    result = gap_validator.validate_gap(gap, max_results=5)
+
+    assert result["status"] != "already_addressed"
+    assert result["confidence"] != "high"
+
+
+def test_explainability_refined_gap_is_actionable(tmp_path, monkeypatch):
+    gap = "Application of explainability techniques to LLM agent security"
+    search_results = [
+        _paper(
+            "generic-xai",
+            "Explainability methods for machine learning systems",
+            "We survey SHAP and LIME for general model interpretability.",
+        ),
+        _paper(
+            "agent-security",
+            "Security risks in LLM agents",
+            "We discuss prompt injection and unsafe tool choices in language model agents.",
+        ),
+        _paper(
+            "agent-benchmark",
+            "Benchmarking LLM agent security",
+            "We evaluate prompt injection attacks against tool-using LLM agents.",
+        ),
+    ]
+
+    monkeypatch.setattr(gap_validator, "_VALIDATION_DIR", tmp_path)
+    monkeypatch.setattr(gap_validator, "get_project_papers", lambda project: [])
+    monkeypatch.setattr(gap_validator, "fetch_papers", lambda query, limit: search_results)
+
+    result = gap_validator.validate_gap(gap, project="llm-agent-security", max_results=5)
+
+    assert result["status"] in {"partially_addressed", "needs_refinement", "confirmed_candidate_gap"}
+    assert "with emphasis on LLM agents, security" not in result["refined_gap"]
+    if result["refined_gap"]:
+        assert "unsafe tool choices" in result["refined_gap"] or "prompt-injection" in result["refined_gap"]
 
 
 def test_project_aware_marking_of_existing_and_external_papers(tmp_path, monkeypatch):

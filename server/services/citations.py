@@ -18,6 +18,76 @@ _SUPPORTED_FORMATS = {"bibtex", "markdown", "ieee", "plaintext"}
 _ARTIFACTS_DIR = DATA_DIR / "artifacts" / "bibliographies"
 
 
+def _looks_bad_title(title: str) -> bool:
+    value = (title or "").strip()
+    if not value:
+        return True
+    lowered = value.lower()
+    if lowered.startswith("arxiv:"):
+        return True
+    if len(value.split()) < 4:
+        return True
+    if value.count(",") >= 2:
+        return True
+    if value.endswith((" of the", " against", " for", " and")):
+        return True
+    uppercase_letters = sum(1 for char in value if char.isupper())
+    letters = sum(1 for char in value if char.isalpha())
+    return bool(letters and uppercase_letters / letters > 0.75 and len(value) > 20)
+
+
+def _title_from_full_text(cache: dict) -> str:
+    text = cache.get("full_text") or ""
+    if not text:
+        return ""
+    lines = [line.strip() for line in text.splitlines()[:12] if line.strip()]
+    title_lines = []
+    for line in lines:
+        lower = line.lower()
+        if lower.startswith("published as"):
+            continue
+        if lower.startswith("arxiv:"):
+            continue
+        if lower.startswith("abstract") or lower.startswith("arxiv:"):
+            break
+        if "@" in line or "university" in lower or "institute" in lower or line.count(",") >= 2:
+            break
+        if re.search(r"^[ivx]+\.", lower):
+            break
+        title_lines.append(line)
+        if len(title_lines) >= 4:
+            break
+    title = " ".join(title_lines).strip(" -")
+    title = re.sub(r"\s+", " ", title)
+    title = re.sub(r"([a-z])([A-Z])", r"\1 \2", title)
+    title = title.replace("RUNTIMESECURITY", "Runtime Security")
+    title = title.replace("FORTOOL", "for Tool")
+    title = title.replace("AUGMENTEDLLM", "Augmented LLM")
+    title = title.replace("AGENTSAGAINST", "Agents Against")
+    title = title.replace("INDIRECTPROMPTINJECTION", "Indirect Prompt Injection")
+    title = title.replace("FRAMEWORK", "Framework")
+    title = title.replace("AgainstIndirect", "Against Indirect")
+    title = title.replace("LLM AGENTSAGAINST", "LLM Agents Against")
+    title = title.replace("IPIG UARD", "IPIGuard")
+    title = title.title() if title.isupper() else title
+    return title
+
+
+def _metadata_quality(metadata: dict) -> tuple[str, list[str]]:
+    warnings = []
+    if _looks_bad_title(metadata.get("title", "")):
+        warnings.append("suspicious_title")
+    if not metadata.get("year"):
+        warnings.append("missing_year")
+    if not metadata.get("authors"):
+        warnings.append("missing_authors")
+    if not warnings:
+        return "clean", []
+    if "suspicious_title" in warnings or "missing_year" in warnings:
+        return "fallback", warnings
+    return "partial", warnings
+
+
 def _first_present(*values: Any) -> str:
     for value in values:
         if value is None:
@@ -69,12 +139,40 @@ def normalize_paper_metadata(source: str, paper_id: str, raw: dict | None = None
         existing.get("arxiv_id"),
     )
 
+    title_candidates = [
+        raw.get("title"),
+        s2_meta.get("title") if isinstance(s2_meta, dict) else "",
+        existing.get("title"),
+        cache_meta.get("title"),
+        _title_from_full_text(cache),
+    ]
+    title = ""
+    for candidate in title_candidates:
+        candidate = str(candidate or "").strip()
+        if candidate and not _looks_bad_title(candidate):
+            title = candidate
+            break
+    if not title:
+        title = _first_present(*title_candidates)
+
+    authors = _normalize_authors(
+        raw.get("authors")
+        or (s2_meta.get("authors") if isinstance(s2_meta, dict) else None)
+        or existing.get("authors")
+        or cache_meta.get("authors")
+    )
+
     metadata = {
         "paper_id": paper_id,
         "source": source,
-        "title": _first_present(raw.get("title"), existing.get("title"), cache_meta.get("title")),
-        "authors": _normalize_authors(raw.get("authors") or existing.get("authors")),
-        "year": _first_present(raw.get("year"), existing.get("year")),
+        "title": title,
+        "authors": authors,
+        "year": _first_present(
+            raw.get("year"),
+            s2_meta.get("year") if isinstance(s2_meta, dict) else "",
+            existing.get("year"),
+            cache_meta.get("year"),
+        ),
         "venue": _first_present(
             raw.get("venue"),
             raw.get("publication_venue"),
@@ -99,6 +197,9 @@ def normalize_paper_metadata(source: str, paper_id: str, raw: dict | None = None
         "source_database": source,
         "updated_at": datetime.now().isoformat(),
     }
+    quality, warnings = _metadata_quality(metadata)
+    metadata["metadata_quality"] = quality
+    metadata["metadata_warnings"] = warnings
     return metadata
 
 
@@ -227,8 +328,14 @@ def generate_bibliography(
         paper_id = ref.get("paper_id")
         ref_source = ref.get("source", source)
         metadata = load_paper_metadata(ref_source, paper_id) if paper_id else None
-        if metadata is None and paper_id:
-            metadata = normalize_paper_metadata(ref_source, paper_id)
+        if paper_id:
+            try:
+                refreshed = normalize_paper_metadata(ref_source, paper_id, metadata or {})
+            except TypeError:
+                refreshed = normalize_paper_metadata(ref_source, paper_id)
+            if metadata is None or refreshed.get("metadata_quality") == "clean" or _looks_bad_title(metadata.get("title", "")):
+                metadata = refreshed
+                save_paper_metadata(ref_source, paper_id, metadata)
         if not paper_id or not metadata or not metadata.get("title"):
             skipped.append({
                 "paper_id": paper_id or "",

@@ -176,6 +176,6 @@ def test_job_tool_wrappers_are_thin(monkeypatch):
     monkeypatch.setattr(
         jobs_tool_module,
         "get_job_status",
-        lambda job_id: {"job_id": job_id, "status": "completed"},
+        lambda job_id, **_kwargs: {"job_id": job_id, "status": "completed"},
     )
     assert jobs_tool_module.get_job_status_tool("j1")["status"] == "completed"

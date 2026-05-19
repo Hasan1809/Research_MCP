@@ -23,8 +23,8 @@ def suggest_experiments_tool(
     In compact mode, the tool reuses cached gap analysis when available and generates
     experiments from gaps plus minimal paper metadata instead of full profiles.
 
-    Requires build_paper_profile_tool or extract_paper_insights_tool data when no matching
-    gap analysis cache exists and gap detection must run. Requires at least 2 active papers.
+    Requires saved paper profiles when no matching gap analysis cache exists and gap
+    detection must run. Requires at least 2 active papers.
     Always call this after detect_gaps_tool, not instead of it.
 
     Preferred project example:

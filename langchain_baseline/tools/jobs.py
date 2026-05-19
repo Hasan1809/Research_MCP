@@ -4,7 +4,6 @@ from services.jobs.job_manager import (
     cancel_job as cancel_job_impl,
     get_job_result as get_job_result_impl,
     get_job_status as get_job_status_impl,
-    list_jobs as list_jobs_impl,
     start_batch_build_profiles_job as start_batch_build_profiles_job_impl,
     start_batch_validate_gaps_job as start_batch_validate_gaps_job_impl,
 )
@@ -44,22 +43,23 @@ def start_batch_validate_gaps_job(
 
 
 @tool
-def get_job_status(job_id: str) -> dict:
-    """Check progress of a background job."""
-    return get_job_status_impl(job_id)
+def get_job_status(
+    job_id: str,
+    wait_seconds: int = 180,
+    poll_interval_seconds: int = 5,
+) -> dict:
+    """Check progress of a background job, waiting by default to avoid rapid polling."""
+    return get_job_status_impl(
+        job_id,
+        wait_seconds=wait_seconds,
+        poll_interval_seconds=poll_interval_seconds,
+    )
 
 
 @tool
 def get_job_result(job_id: str) -> dict:
     """Fetch the final or current result for a background job."""
     return get_job_result_impl(job_id)
-
-
-@tool
-def list_jobs(status: str | None = None, limit: int = 20) -> dict:
-    """List recent background jobs."""
-    return list_jobs_impl(status=status, limit=limit)
-
 
 @tool
 def cancel_job(job_id: str) -> dict:

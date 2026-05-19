@@ -357,6 +357,171 @@ def test_suggest_experiments_uses_batch_validation_summary(tmp_path, monkeypatch
     assert result["experiments"][0]["builds_on"] == ["paper-0"]
 
 
+def test_suggest_experiments_no_validated_gaps_skips_llm(tmp_path, monkeypatch):
+    papers = _papers(2)
+    analysis = _gap_analysis([p["paper_id"] for p in papers])
+    _write_gap_artifact(tmp_path, papers, analysis)
+    batch_summary = {
+        "project": "saved-project",
+        "project_papers": papers,
+        "batch_artifact_path": str(tmp_path / "batch.json"),
+        "validated_gaps": [
+            {
+                "gap_id": "research_gap_1",
+                "gap_type": "research_gap",
+                "original_gap": "Already addressed gap one",
+                "status": "already_addressed",
+                "confidence": "high",
+                "use_for_experiments": False,
+                "decision_reason": "directly addressed",
+                "refined_gap": None,
+                "external_evidence_titles": ["External addressed paper"],
+            },
+            {
+                "gap_id": "methodological_gap_1",
+                "gap_type": "methodological_gap",
+                "original_gap": "Already addressed gap two",
+                "status": "already_addressed",
+                "confidence": "high",
+                "use_for_experiments": False,
+                "decision_reason": "directly addressed",
+                "refined_gap": None,
+                "external_evidence_titles": [],
+            },
+        ],
+        "failed_gaps": [],
+    }
+    FakeLLM.calls = []
+
+    monkeypatch.setattr(experiment_suggester, "_ANALYSIS_DIR", tmp_path)
+    monkeypatch.setattr(experiment_suggester, "LLMClient", lambda: FakeLLM())
+    monkeypatch.setattr(
+        experiment_suggester,
+        "find_latest_batch_validation_summary",
+        lambda project, papers=None: batch_summary,
+    )
+    monkeypatch.setattr(
+        experiment_suggester,
+        "load_paper_metadata",
+        lambda source, paper_id: {"title": f"Title {paper_id}", "year": "2026"},
+    )
+
+    result = experiment_suggester.suggest_experiments_for_papers(
+        papers,
+        project="saved-project",
+        compact=True,
+    )
+
+    assert FakeLLM.calls == []
+    assert result["status"] == "no_validated_gaps"
+    assert result["error"] is None
+    assert result["experiments"] == []
+    assert result["experiment_count"] == 0
+    assert result["validation_used"] is True
+    assert result["included_gap_count"] == 0
+    assert result["excluded_gap_count"] == 2
+    assert len(result["excluded_gaps"]) == 2
+    assert result["recommended_next_step"]
+    assert "No experiments were generated" in result["recommended_next_step"]
+    assert result["save_path"]
+    assert os.path.exists(result["save_path"])
+    assert result["requested_experiment_count"] == 0
+    assert result["raw_experiment_count"] == 0
+
+
+def test_suggest_experiments_one_included_gap_limits_and_dedupes(tmp_path, monkeypatch):
+    papers = _papers(3)
+    analysis = _gap_analysis([p["paper_id"] for p in papers])
+    _write_gap_artifact(tmp_path, papers, analysis)
+    batch_summary = {
+        "project": "saved-project",
+        "project_papers": papers,
+        "batch_artifact_path": str(tmp_path / "batch.json"),
+        "validated_gaps": [
+            {
+                "gap_id": "methodological_gap_1",
+                "gap_type": "methodological_gap",
+                "original_gap": "Explainability for LLM agent security",
+                "status": "needs_refinement",
+                "confidence": "medium",
+                "use_for_experiments": True,
+                "decision_reason": "needs refinement",
+                "refined_gap": "Evaluating whether explainability methods help developers identify unsafe tool choices in LLM agents under prompt-injection attacks.",
+                "external_evidence_titles": [],
+            }
+        ],
+        "failed_gaps": [],
+    }
+    FakeLLM.calls = []
+    monkeypatch.setattr(
+        FakeLLM,
+        "response",
+        {
+            "experiments": [
+                {
+                    "title": "Explain unsafe tool choices",
+                    "addresses_gap": "Evaluating whether explainability methods help developers identify unsafe tool choices in LLM agents under prompt-injection attacks.",
+                    "hypothesis": "Explanations help developers find unsafe tool choices.",
+                    "method": "Compare explanation-assisted review against normal review for prompt-injection tool-use traces.",
+                    "baselines": [],
+                    "datasets": [],
+                    "expected_outcome": "Higher detection of unsafe choices.",
+                    "feasibility": "high",
+                    "builds_on": ["paper-0"],
+                },
+                {
+                    "title": "Explainability for unsafe tool decisions",
+                    "addresses_gap": "Evaluating whether explainability methods help developers identify unsafe tool choices in LLM agents under prompt-injection attacks.",
+                    "hypothesis": "Explanations help developers identify unsafe tool choices.",
+                    "method": "Use SHAP and LIME explanations to compare developer review of prompt-injection tool-use traces.",
+                    "baselines": [],
+                    "datasets": [],
+                    "expected_outcome": "Higher detection of unsafe choices.",
+                    "feasibility": "medium",
+                    "builds_on": ["paper-0", "paper-1"],
+                },
+                {
+                    "title": "Warning comprehension for tool-use attacks",
+                    "addresses_gap": "Evaluating whether explainability methods help developers identify unsafe tool choices in LLM agents under prompt-injection attacks.",
+                    "hypothesis": "Decision-transparent warnings improve response quality.",
+                    "method": "Run a small developer study comparing warnings with and without security decision traces.",
+                    "baselines": [],
+                    "datasets": [],
+                    "expected_outcome": "Developers handle risky actions better.",
+                    "feasibility": "medium",
+                    "builds_on": ["paper-2"],
+                },
+            ]
+        },
+    )
+
+    monkeypatch.setattr(experiment_suggester, "_ANALYSIS_DIR", tmp_path)
+    monkeypatch.setattr(experiment_suggester, "LLMClient", lambda: FakeLLM())
+    monkeypatch.setattr(
+        experiment_suggester,
+        "find_latest_batch_validation_summary",
+        lambda project, papers=None: batch_summary,
+    )
+    monkeypatch.setattr(
+        experiment_suggester,
+        "load_paper_metadata",
+        lambda source, paper_id: {"title": f"Title {paper_id}", "year": "2026"},
+    )
+
+    result = experiment_suggester.suggest_experiments_for_papers(
+        papers,
+        project="saved-project",
+        compact=True,
+    )
+
+    assert result["included_gap_count"] == 1
+    assert result["requested_experiment_count"] == 2
+    assert result["raw_experiment_count"] == 3
+    assert result["experiment_count"] <= 2
+    assert result["deduplicated_experiment_count"] <= 2
+    assert "Requested experiment count: 2" in FakeLLM.calls[0]["user"]
+
+
 def test_suggest_experiments_timeout_keeps_validation_metadata(tmp_path, monkeypatch):
     papers = _papers(2)
     analysis = _gap_analysis([p["paper_id"] for p in papers])

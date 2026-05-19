@@ -22,7 +22,7 @@ def detect_gaps_tool(papers: list[dict] = None, project: str = None) -> dict:
     """
     Identify research gaps across multiple profiled papers.
 
-    Requires build_paper_profile_tool to have been called for each paper first.
+    Requires paper profiles to have been built for each paper first.
     Pass papers as a list of dicts: [{"paper_id": "2602.07652", "source": "arxiv"}, ...]
     Requires at least 2 papers.
 

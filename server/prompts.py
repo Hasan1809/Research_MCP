@@ -16,19 +16,17 @@ STEPS — execute every step in order, do not skip any:
    papers whose title or abstract directly mentions the research
    topic. Reject papers that are only loosely related by domain.
 3. Call batch_ingest_papers_tool once with all selected papers
-   as a list. Never call ingest_paper_tool individually when you
-   have multiple papers. Use the paper_id and source exactly as
+   as a list. Use the paper_id and source exactly as
    returned by search_papers_tool; never pass a URL as paper_id.
 4. Call start_batch_build_profiles_job once with all papers as a list and max_workers=2.
-   Poll get_job_status_tool(job_id) until status is completed, then call
-   get_job_result_tool(job_id). Never call batch_build_profiles_tool for large
-   batches in Claude Desktop, and never use extract_paper_insights_tool.
+   Poll get_job_status_tool(job_id, wait_seconds=180) until status is completed, then call
+   get_job_result_tool(job_id). Do not start any other profile-building work while
+   the job is running.
 5. Call batch_add_to_project_tool once using project name "{topic}"
-   and all selected papers as a list. Never call add_to_project_tool
-   individually when you have multiple papers.
+   and all selected papers as a list.
 6. Call detect_gaps_tool(project="{topic}").
 7. Optionally call start_batch_validate_gaps_job(project="{topic}", max_workers=2)
-   when validated gaps are needed before experiments. Poll get_job_status_tool(job_id)
+   when validated gaps are needed before experiments. Poll get_job_status_tool(job_id, wait_seconds=180)
    until completed, then call get_job_result_tool(job_id).
 8. Call suggest_experiments_tool(project="{topic}", compact=True).
    This step is mandatory. Do not stop after detect_gaps_tool.
@@ -78,7 +76,10 @@ RULES:
         """Deep analysis of a single paper."""
         return f"""Analyze paper {paper_id} from {source}:
 
-STEPS: ingest_paper_tool → build_paper_profile_tool
+STEPS:
+1. batch_ingest_papers_tool(papers=[{{"paper_id": "{paper_id}", "source": "{source}"}}])
+2. start_batch_build_profiles_job(papers=[{{"paper_id": "{paper_id}", "source": "{source}"}}], max_workers=1)
+3. Poll get_job_status_tool(job_id, wait_seconds=180) until completed, then call get_job_result_tool(job_id).
 
 OUTPUT FORMAT (use EXACTLY):
 
@@ -110,7 +111,7 @@ Do NOT add commentary. Do NOT show JSON."""
 STEPS — execute every step in order, do not skip any:
 1. detect_gaps_tool(project="{project}")
 2. Optionally call start_batch_validate_gaps_job(project="{project}", max_workers=2)
-   when validated gaps are needed before experiments. Poll get_job_status_tool(job_id)
+   when validated gaps are needed before experiments. Poll get_job_status_tool(job_id, wait_seconds=180)
    until completed, then call get_job_result_tool(job_id).
 3. suggest_experiments_tool(project="{project}", compact=True)
    This step is mandatory. Do not stop after detect_gaps_tool.
