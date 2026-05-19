@@ -5,6 +5,7 @@ from typing import List, Optional
 import httpx
 from pypdf import PdfReader
 
+from config import PDF_DOWNLOAD_TIMEOUT
 from services.paper_repository import load_paper_cache, save_paper_cache
 from utils.logger import get_logger
 
@@ -158,7 +159,7 @@ def save_cached(source: str, paper_id: str, data: dict):
 
 def download_and_extract_text(pdf_url: str) -> str:
     logger.info("Downloading PDF: %s", pdf_url)
-    response = httpx.get(pdf_url, follow_redirects=True, timeout=30)
+    response = httpx.get(pdf_url, follow_redirects=True, timeout=PDF_DOWNLOAD_TIMEOUT)
     response.raise_for_status()
     logger.info("PDF downloaded: %d bytes", len(response.content))
 
@@ -175,7 +176,7 @@ def download_and_extract_text(pdf_url: str) -> str:
 
 def extract_structured_text(pdf_url: str) -> dict:
     logger.info("Downloading PDF for structured extraction: %s", pdf_url)
-    response = httpx.get(pdf_url, follow_redirects=True, timeout=30)
+    response = httpx.get(pdf_url, follow_redirects=True, timeout=PDF_DOWNLOAD_TIMEOUT)
     response.raise_for_status()
     logger.info("PDF downloaded: %d bytes", len(response.content))
 

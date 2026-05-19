@@ -1,12 +1,17 @@
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+from config import BATCH_BUILD_PROFILES_MAX_WORKERS
 from tools.build_paper_profile import build_paper_profile_tool
 from utils.logger import get_logger, log_invocation
 
 logger = get_logger(__name__)
 
 
-def batch_build_profiles_tool(papers: list[dict], force: bool = False) -> dict:
+def batch_build_profiles_tool(
+    papers: list[dict],
+    force: bool = False,
+    max_workers: int = None,
+) -> dict:
     """
     Build profiles for multiple papers concurrently using parallel
     IONOS LLM calls. Each call is independent with its own context -
@@ -26,13 +31,18 @@ def batch_build_profiles_tool(papers: list[dict], force: bool = False) -> dict:
     Returns profiles (dict of paper_id -> profile) for successes and
     failed (dict of paper_id -> error string) for failures.
 
+    max_workers controls profile calls run in parallel. The default comes from
+    BATCH_BUILD_PROFILES_MAX_WORKERS. For larger Claude Desktop workflows,
+    prefer start_batch_build_profiles_job so the client can poll progress
+    instead of waiting for one long tool response.
+
     Example:
       batch_build_profiles_tool(papers=[
         {"paper_id": "2602.07652", "source": "arxiv"},
         {"paper_id": "649def34f8be52c8b66281af98ae884c09aef38b", "source": "semantic_scholar"}
       ])
     """
-    arguments = {"papers": papers, "force": force}
+    arguments = {"papers": papers, "force": force, "max_workers": max_workers}
     profiles = {}
     failed = {}
 
@@ -49,7 +59,11 @@ def batch_build_profiles_tool(papers: list[dict], force: bool = False) -> dict:
         )
         return {"profiles": profiles, "failed": failed}
 
-    max_workers = min(len(papers), 5)
+    if max_workers is None:
+        max_workers = BATCH_BUILD_PROFILES_MAX_WORKERS
+    if max_workers < 1:
+        raise ValueError("max_workers must be at least 1.")
+    max_workers = min(len(papers), max_workers)
     logger.info(
         "Batch profile build started: papers=%d max_workers=%d force=%s",
         len(papers),

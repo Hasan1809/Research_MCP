@@ -34,8 +34,16 @@ def _ensure_namespace_package(name: str, path: Path) -> None:
 _ensure_namespace_package("services", SERVER_SERVICES_DIR)
 _ensure_namespace_package("utils", BASELINE_UTILS_DIR)
 
-from config import DATA_DIR, FULL_TEXT_CHAR_LIMIT, IONOS_MODEL, LLM_TEMPERATURE
-from services.analysis.experiment_suggester import suggest_experiments
+from config import (
+    BATCH_BUILD_PROFILES_MAX_WORKERS,
+    BATCH_INGEST_MAX_WORKERS,
+    DATA_DIR,
+    FULL_TEXT_CHAR_LIMIT,
+    IONOS_MODEL,
+    LLM_TEMPERATURE,
+)
+from services.analysis.experiment_suggester import suggest_experiments_for_papers
+from services.analysis.gap_validator import batch_validate_gaps, validate_gap
 from services.analysis.gap_detector import detect_gaps
 from services.citations import (
     generate_bibliography as generate_bibliography_service,
@@ -265,7 +273,7 @@ def ingest_paper_impl(paper_id: str, source: str) -> dict:
     return result
 
 
-def batch_ingest_papers_impl(papers: list[dict]) -> dict:
+def batch_ingest_papers_impl(papers: list[dict], max_workers: int | None = None) -> dict:
     """Ingest multiple papers concurrently."""
     succeeded = []
     failed = {}
@@ -279,7 +287,11 @@ def batch_ingest_papers_impl(papers: list[dict]) -> dict:
         })
         return {"succeeded": succeeded, "failed": failed}
 
-    max_workers = min(len(papers), 5)
+    if max_workers is None:
+        max_workers = BATCH_INGEST_MAX_WORKERS
+    if max_workers < 1:
+        raise ValueError("max_workers must be at least 1.")
+    max_workers = min(len(papers), max_workers)
     logger.info("LangChain batch ingest started: papers=%d max_workers=%d", len(papers), max_workers)
 
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
@@ -381,7 +393,11 @@ def build_paper_profile_impl(paper_id: str, source: str, force: bool = False) ->
     return result
 
 
-def batch_build_profiles_impl(papers: list[dict], force: bool = False) -> dict:
+def batch_build_profiles_impl(
+    papers: list[dict],
+    force: bool = False,
+    max_workers: int | None = None,
+) -> dict:
     """Build profiles for multiple papers concurrently."""
     profiles = {}
     failed = {}
@@ -395,7 +411,11 @@ def batch_build_profiles_impl(papers: list[dict], force: bool = False) -> dict:
         })
         return {"profiles": profiles, "failed": failed}
 
-    max_workers = min(len(papers), 5)
+    if max_workers is None:
+        max_workers = BATCH_BUILD_PROFILES_MAX_WORKERS
+    if max_workers < 1:
+        raise ValueError("max_workers must be at least 1.")
+    max_workers = min(len(papers), max_workers)
     logger.info(
         "LangChain batch profile build started: papers=%d max_workers=%d force=%s",
         len(papers),
@@ -601,43 +621,134 @@ def suggest_experiments_impl(
     papers: list[dict] | str = None,
     project: str = None,
     gap_analysis: dict = None,
+    compact: bool = True,
 ) -> dict:
     if project:
+        if papers:
+            logger.warning(
+                "LangChain baseline: both project and papers provided; using project manifest and ignoring papers."
+            )
         papers = get_project_papers(project)
-        logger.info("LangChain baseline suggest experiments from project=%r count=%d", project, len(papers))
+        logger.info(
+            "LangChain baseline suggest experiments from project=%r active_paper_count=%d compact=%s",
+            project,
+            len(papers),
+            compact,
+        )
     if not papers:
         raise ValueError("suggest_research_experiments requires a papers list.")
     papers = _normalize_papers_input(papers)
     if len(papers) < 2:
         raise ValueError("At least 2 papers are required for experiment suggestions.")
 
-    arguments = {"papers": papers, "project": project}
-    profiles = [load_profile_or_insights(ref["source"], ref["paper_id"]) for ref in papers]
-    paper_ids = [ref["paper_id"] for ref in papers]
-    if gap_analysis is not None:
-        logger.info("LangChain baseline using provided gap analysis")
-    else:
-        gap_analysis = _find_existing_gap_analysis(paper_ids)
-        if gap_analysis is not None:
-            logger.info("LangChain baseline gap analysis cache hit for paper_ids=%s", sorted(paper_ids))
-        else:
-            logger.info("LangChain baseline gap analysis cache miss for paper_ids=%s", sorted(paper_ids))
-            gap_analysis, _ = detect_gaps(profiles)
-    result, _ = suggest_experiments(gap_analysis, profiles)
+    arguments = {
+        "project": project,
+        "active_paper_count": len(papers),
+        "compact": compact,
+    } if project else {
+        "papers": papers,
+        "active_paper_count": len(papers),
+        "compact": compact,
+    }
+    result = suggest_experiments_for_papers(
+        papers,
+        gap_analysis=gap_analysis,
+        compact=compact,
+        project=project,
+    )
 
-    _ANALYSIS_DIR.mkdir(parents=True, exist_ok=True)
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    paper_ids = "_".join(ref.get("paper_id", "?").replace("/", "-") for ref in papers[:3])
-    save_path = _ANALYSIS_DIR / f"lc_experiments_{timestamp}_{paper_ids}.json"
-    with open(save_path, "w", encoding="utf-8") as f:
-        json.dump({"papers": papers, "gaps": gap_analysis, "experiments": result}, f, indent=2)
-
-    experiments = result.get("experiments", [])
     log_invocation("lc_suggest_experiments", arguments, output={
-        "experiment_count": len(experiments),
-        "save_path": str(save_path),
+        "experiment_count": result.get("experiment_count"),
+        "gap_count": result.get("gap_count"),
+        "gap_source": result.get("gap_source"),
+        "project": result.get("project"),
+        "active_paper_count": result.get("active_paper_count"),
+        "compact": result.get("compact"),
+        "gap_analysis_path": result.get("gap_analysis_path"),
+        "save_path": result.get("save_path"),
+        "error": result.get("error"),
     })
-    return {"gaps": gap_analysis, "experiments": experiments}
+    return result
+
+
+def validate_gap_impl(
+    gap: str,
+    project: str = None,
+    max_results: int = 10,
+    mode: str = "metadata_only",
+) -> dict:
+    arguments = {
+        "gap": gap,
+        "project": project,
+        "max_results": max_results,
+        "mode": mode,
+    }
+    logger.info(
+        "LangChain baseline validate gap: project=%r max_results=%d mode=%s",
+        project,
+        max_results,
+        mode,
+    )
+    try:
+        result = validate_gap(
+            gap=gap,
+            project=project,
+            max_results=max_results,
+            mode=mode,
+        )
+    except Exception as e:
+        log_invocation("lc_validate_gap", arguments, error=str(e))
+        raise
+
+    log_invocation("lc_validate_gap", arguments, output={
+        "status": result.get("status"),
+        "confidence": result.get("confidence"),
+        "results_found": result.get("results_found"),
+        "relevant_results": result.get("relevant_results"),
+        "artifact_path": result.get("artifact_path"),
+    })
+    return result
+
+
+def batch_validate_gaps_impl(
+    project: str,
+    max_results_per_gap: int = 10,
+    mode: str = "metadata_only",
+    max_workers: int = 2,
+) -> dict:
+    arguments = {
+        "project": project,
+        "max_results_per_gap": max_results_per_gap,
+        "mode": mode,
+        "max_workers": max_workers,
+    }
+    logger.info(
+        "LangChain baseline batch validate gaps: project=%r max_results_per_gap=%d mode=%s max_workers=%d",
+        project,
+        max_results_per_gap,
+        mode,
+        max_workers,
+    )
+    try:
+        result = batch_validate_gaps(
+            project=project,
+            max_results_per_gap=max_results_per_gap,
+            mode=mode,
+            max_workers=max_workers,
+        )
+    except Exception as e:
+        log_invocation("lc_batch_validate_gaps", arguments, error=str(e))
+        raise
+
+    log_invocation("lc_batch_validate_gaps", arguments, output={
+        "project": result.get("project"),
+        "gap_count": result.get("gap_count"),
+        "validated_count": result.get("validated_count"),
+        "failed_count": result.get("failed_count"),
+        "status_counts": result.get("status_counts"),
+        "batch_artifact_path": result.get("batch_artifact_path"),
+    })
+    return result
 
 
 __all__ = [
@@ -645,6 +756,7 @@ __all__ = [
     "batch_add_to_project_impl",
     "batch_build_profiles_impl",
     "batch_ingest_papers_impl",
+    "batch_validate_gaps_impl",
     "build_paper_profile_impl",
     "create_project_impl",
     "detect_gaps_impl",
@@ -653,6 +765,7 @@ __all__ = [
     "list_projects_impl",
     "search_papers_impl",
     "suggest_experiments_impl",
+    "validate_gap_impl",
     "get_logger",
     "get_session_dir",
     "init_logging",

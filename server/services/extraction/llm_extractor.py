@@ -1,7 +1,7 @@
 import json
 import os
 
-from config import IONOS_MODEL
+from config import BUILD_PROFILE_TIMEOUT, EXTRACT_FIELD_TIMEOUT, EXTRACT_INSIGHTS_TIMEOUT, IONOS_MODEL
 from services.extraction.llm_client import LLMClient
 from utils.logger import get_logger
 
@@ -208,7 +208,7 @@ def extract_field(field: str, text: str) -> tuple[list, str]:
             system=system_prompt,
             user=_FIELD_USER_PROMPT_TEMPLATE.format(field=field, text=text),
             json_mode=True,
-            timeout=60,
+            timeout=EXTRACT_FIELD_TIMEOUT,
             tool_name="extract_field",
             input_chars=len(text),
         )
@@ -230,7 +230,7 @@ def extract_insights(text: str) -> tuple[dict, str]:
         system=_SYSTEM_PROMPT,
         user=user_message,
         json_mode=False,
-        timeout=60,
+        timeout=EXTRACT_INSIGHTS_TIMEOUT,
         tool_name="extract_insights",
         input_chars=len(text),
     )
@@ -257,7 +257,7 @@ def build_profile(text: str, paper_id: str = "") -> tuple[dict, str]:
         system=_PROFILE_SYSTEM_PROMPT,
         user=_PROFILE_USER_TEMPLATE.format(text=text, paper_id=paper_id),
         json_mode=True,
-        timeout=90,
+        timeout=BUILD_PROFILE_TIMEOUT,
         tool_name="build_profile",
         input_chars=len(text),
         paper_id=paper_id,

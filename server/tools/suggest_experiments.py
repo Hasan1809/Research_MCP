@@ -1,121 +1,118 @@
 """MCP tool for suggesting experiments based on gap analysis."""
-import json
-from datetime import datetime
-
-from config import DATA_DIR
-from services.analysis.experiment_suggester import suggest_experiments
-from services.analysis.gap_detector import detect_gaps
-from services.paper_repository import load_profile
+from services.analysis.experiment_suggester import suggest_experiments_for_papers
 from utils.logger import get_logger, log_invocation
 
 logger = get_logger(__name__)
-
-_ANALYSIS_DIR = DATA_DIR / "analysis"
-
-
-def _find_existing_gap_analysis(paper_ids: list[str]) -> dict | None:
-    sorted_ids = sorted(paper_ids)
-    for path in sorted(_ANALYSIS_DIR.glob("gap_analysis_*.json"), reverse=True):
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-            existing_ids = sorted(p["paper_id"] for p in data.get("papers", []))
-            if existing_ids == sorted_ids:
-                return data["analysis"]
-        except Exception:
-            continue
-    return None
 
 
 def suggest_experiments_tool(
     papers: list[dict] = None,
     project: str = None,
     gap_analysis: dict = None,
+    compact: bool = True,
 ) -> dict:
     """
-    Suggest concrete experiments based on research gaps across papers.
+    Suggest concrete research experiments from an existing project or explicit paper list.
 
-    Requires build_paper_profile_tool to have been called for each paper first.
-    Pass papers as a list of dicts: [{"paper_id": "2602.07652", "source": "arxiv"}, ...]
-    Requires at least 2 papers.
+    Prefer passing project when papers are already grouped in a saved project; the tool
+    will load project papers internally. Do not pass both project and papers unless
+    necessary. If both are provided, project wins and the explicit paper list is ignored.
+    Use papers=[{"paper_id": "...", "source": "..."}] only for one-off analysis without
+    a saved project.
+
+    In compact mode, the tool reuses cached gap analysis when available and generates
+    experiments from gaps plus minimal paper metadata instead of full profiles.
+
+    Requires build_paper_profile_tool or extract_paper_insights_tool data when no matching
+    gap analysis cache exists and gap detection must run. Requires at least 2 active papers.
     Always call this after detect_gaps_tool, not instead of it.
 
-    Example:
+    Preferred project example:
+      suggest_experiments_tool(project="llm-agent-security-batch-project-test", compact=True)
+
+    Explicit paper-list example:
       suggest_experiments_tool(papers=[
         {"paper_id": "2602.07652", "source": "arxiv"},
         {"paper_id": "2603.17419", "source": "arxiv"}
-      ])
+      ], compact=True)
 
     Returns 3-5 experiment proposals with hypotheses, methods,
-    baselines, datasets, and feasibility ratings.
+    baselines, datasets, feasibility ratings, and compact run metadata.
     """
     if project:
         from services.project_manager import get_project_papers
+        if papers:
+            logger.warning(
+                "Both project and papers provided; using project manifest and ignoring papers."
+            )
         papers = get_project_papers(project)
-        logger.info("Loaded %d papers from project %r", len(papers), project)
+        logger.info(
+            "Tool invoked: suggest_experiments project=%r active_paper_count=%d compact=%s",
+            project,
+            len(papers),
+            compact,
+        )
     elif papers:
-        logger.info("Tool invoked: suggest_experiments count=%d", len(papers))
+        logger.info(
+            "Tool invoked: suggest_experiments active_paper_count=%d compact=%s",
+            len(papers),
+            compact,
+        )
     else:
         raise ValueError("suggest_experiments_tool requires either 'papers' or 'project'.")
 
     if len(papers) < 2:
         raise ValueError("At least 2 papers are required for experiment suggestions.")
 
-    arguments = {"papers": papers, "project": project}
-
-    profiles = []
-    for ref in papers:
-        paper_id = ref.get("paper_id")
-        source = ref.get("source")
-        profile = load_profile(source, paper_id)
-        if profile is None:
-            error = (
-                f"Profile not found for paper_id={paper_id!r} source={source!r}. "
-                "Run build_paper_profile_tool first."
-            )
-            log_invocation("suggest_experiments_tool", arguments, error=error)
-            raise FileNotFoundError(error)
-        profiles.append(profile)
-
-    if gap_analysis is None:
-        paper_ids = [ref.get("paper_id", "") for ref in papers]
-        cached_gap_analysis = _find_existing_gap_analysis(paper_ids)
-        if cached_gap_analysis is not None:
-            gap_analysis = cached_gap_analysis
-            logger.info("Gap analysis cache hit for paper_ids=%s", sorted(paper_ids))
-        else:
-            logger.info("Gap analysis cache miss for paper_ids=%s", sorted(paper_ids))
-            logger.info("Running gap detection for %d papers...", len(profiles))
-            try:
-                gap_analysis, _ = detect_gaps(profiles)
-            except Exception as e:
-                log_invocation("suggest_experiments_tool", arguments, error=str(e))
-                raise
+    if project:
+        arguments = {
+            "project": project,
+            "active_paper_count": len(papers),
+            "compact": compact,
+        }
     else:
-        logger.info("Using provided gap analysis (skipping detection)")
+        arguments = {
+            "papers": papers,
+            "active_paper_count": len(papers),
+            "compact": compact,
+        }
 
-    logger.info("Generating experiment suggestions...")
     try:
-        result, raw = suggest_experiments(gap_analysis, profiles)
+        result = suggest_experiments_for_papers(
+            papers,
+            gap_analysis=gap_analysis,
+            compact=compact,
+            project=project,
+        )
     except Exception as e:
         log_invocation("suggest_experiments_tool", arguments, error=str(e))
         raise
 
-    _ANALYSIS_DIR.mkdir(parents=True, exist_ok=True)
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    paper_ids = "_".join(ref.get("paper_id", "?").replace("/", "-") for ref in papers[:3])
-    save_path = _ANALYSIS_DIR / f"experiments_{timestamp}_{paper_ids}.json"
-    with save_path.open("w", encoding="utf-8") as f:
-        json.dump({"papers": papers, "gaps": gap_analysis, "experiments": result}, f, indent=2)
-    logger.info("Experiment suggestions saved to %s", save_path)
-
     experiments = result.get("experiments", [])
-    log_invocation("suggest_experiments_tool", arguments, output={
+    output = {
         "experiment_count": len(experiments),
-        "gap_count": len(gap_analysis.get("research_gaps", [])),
-        "save_path": str(save_path),
-    })
-
-    return {
-        "gaps": gap_analysis,
-        "experiments": experiments,
+        "gap_count": result.get("gap_count"),
+        "gap_source": result.get("gap_source"),
+        "project": project,
+        "active_paper_count": len(papers),
+        "compact": compact,
+        "gap_analysis_path": result.get("gap_analysis_path"),
+        "save_path": result.get("save_path"),
+        "error": result.get("error"),
+        "validation_used": result.get("validation_used"),
+        "batch_validation_path": result.get("batch_validation_path"),
+        "included_gap_count": result.get("included_gap_count"),
+        "excluded_gap_count": result.get("excluded_gap_count"),
+        "refined_gap_count": result.get("refined_gap_count"),
     }
+    logger.info(
+        "suggest_experiments complete: project=%r active_paper_count=%d compact=%s gap_source=%s save_path=%s",
+        project,
+        len(papers),
+        compact,
+        result.get("gap_source"),
+        result.get("save_path"),
+    )
+    log_invocation("suggest_experiments_tool", arguments, output=output)
+
+    return result

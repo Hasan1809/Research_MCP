@@ -176,15 +176,21 @@ STEPS — execute every step in order, do not skip any:
 3. Call batch_ingest_papers once with all selected papers as a list.
    Use the paper_id and source exactly as returned by search_papers;
    never pass a URL as paper_id.
-4. Call batch_build_profiles once with all papers as a list.
+4. Call start_batch_build_profiles_job once with all papers as a list and max_workers=2.
+   Poll get_job_status(job_id) until status is completed, then call
+   get_job_result(job_id). Do not use the synchronous batch_build_profiles
+   tool for larger batches.
 5. Call batch_add_to_project once using project name "{topic}" and all
    selected papers as a list. Never call add_to_project individually when
    you have multiple papers.
-6. Call detect_research_gaps with all papers as a list.
-7. Call suggest_research_experiments with all papers as a list.
+6. Call detect_research_gaps(project="{topic}").
+7. Optionally call start_batch_validate_gaps_job(project="{topic}", max_workers=2)
+   when validated gaps are needed before experiments. Poll get_job_status(job_id)
+   until completed, then call get_job_result(job_id).
+8. Call suggest_research_experiments(project="{topic}", compact=True).
    This step is mandatory. Do not stop after detect_research_gaps.
 
-OUTPUT — after all seven steps are complete, write your response
+OUTPUT — after all required steps are complete, write your response
 in this exact format and nothing else:
 
 ## Papers Analyzed
@@ -216,6 +222,7 @@ The field_summary string from detect_research_gaps output verbatim.
 
 RULES:
 - Do not create any files or documents.
+- If asked to validate a gap after this workflow, call validate_research_gap(gap=<gap text>, project="{topic}").
 - Do not add budget estimates, timelines, FTE counts, or resource requirements.
 - Do not add executive summaries, next steps, or collaboration sections.
 - Do not add any sections not listed in the OUTPUT format above.

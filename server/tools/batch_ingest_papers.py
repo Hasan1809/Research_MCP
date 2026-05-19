@@ -1,12 +1,13 @@
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+from config import BATCH_INGEST_MAX_WORKERS
 from tools.ingest_paper import ingest_paper_tool
 from utils.logger import get_logger, log_invocation
 
 logger = get_logger(__name__)
 
 
-def batch_ingest_papers_tool(papers: list[dict]) -> dict:
+def batch_ingest_papers_tool(papers: list[dict], max_workers: int = None) -> dict:
     """
     Download and process multiple paper PDFs concurrently.
     Faster than calling ingest_paper_tool one at a time.
@@ -44,7 +45,11 @@ def batch_ingest_papers_tool(papers: list[dict]) -> dict:
         )
         return {"succeeded": succeeded, "failed": failed}
 
-    max_workers = min(len(papers), 5)
+    if max_workers is None:
+        max_workers = BATCH_INGEST_MAX_WORKERS
+    if max_workers < 1:
+        raise ValueError("max_workers must be at least 1.")
+    max_workers = min(len(papers), max_workers)
     logger.info("Batch ingest started: papers=%d max_workers=%d", len(papers), max_workers)
 
     with ThreadPoolExecutor(max_workers=max_workers) as pool:

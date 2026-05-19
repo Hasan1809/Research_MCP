@@ -3,6 +3,7 @@ from typing import Any
 
 import httpx
 
+from config import SEMANTIC_SCHOLAR_TIMEOUT
 from config import S2_API_KEY
 from utils.logger import get_logger
 
@@ -25,7 +26,7 @@ def _get_with_retries(url: str, *, params: dict[str, Any]) -> httpx.Response:
                 url,
                 params=params,
                 headers=_headers(),
-                timeout=30,
+                timeout=SEMANTIC_SCHOLAR_TIMEOUT,
             )
             if response.status_code == 429:
                 wait = _BACKOFF_BASE * (2 ** attempt)

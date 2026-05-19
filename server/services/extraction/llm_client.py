@@ -3,7 +3,7 @@ import time
 
 import httpx
 
-from config import IONOS_API_TOKEN, IONOS_BASE_URL, IONOS_MODEL, LLM_TEMPERATURE
+from config import IONOS_API_TOKEN, IONOS_BASE_URL, IONOS_MODEL, LLM_REQUEST_TIMEOUT, LLM_TEMPERATURE
 from utils.usage_tracker import log_usage
 
 
@@ -16,7 +16,7 @@ class LLMClient:
         system: str,
         user: str,
         json_mode: bool = False,
-        timeout: int = 60,
+        timeout: int = LLM_REQUEST_TIMEOUT,
         tool_name: str = "",
         input_chars: int = 0,
         paper_id: str = "",
@@ -33,6 +33,12 @@ class LLMClient:
             payload["response_format"] = {"type": "json_object"}
 
         start = time.time()
+        request_timeout = httpx.Timeout(
+            connect=30.0,
+            read=float(timeout),
+            write=30.0,
+            pool=30.0,
+        )
         response = httpx.post(
             f"{IONOS_BASE_URL}/chat/completions",
             headers={
@@ -40,7 +46,7 @@ class LLMClient:
                 "Content-Type": "application/json",
             },
             json=payload,
-            timeout=timeout,
+            timeout=request_timeout,
         )
         response.raise_for_status()
         latency = time.time() - start

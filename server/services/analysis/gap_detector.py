@@ -3,6 +3,7 @@ LLM-powered research gap detection across multiple papers.
 """
 import os
 
+from config import DETECT_GAPS_TIMEOUT
 from services.extraction.llm_client import LLMClient
 from utils.logger import get_logger
 
@@ -131,7 +132,7 @@ def detect_gaps(paper_profiles: list[dict]) -> tuple[dict, str]:
         system=_GAP_DETECTION_SYSTEM_PROMPT,
         user=user_message,
         json_mode=True,
-        timeout=90,
+        timeout=DETECT_GAPS_TIMEOUT,
         tool_name="detect_gaps",
         input_chars=len(user_message),
     )

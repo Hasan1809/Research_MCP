@@ -2,7 +2,7 @@ import json
 import re
 from collections import Counter
 
-from config import IONOS_API_TOKEN, IONOS_BASE_URL, IONOS_MODEL
+from config import ANALYZE_PAPERS_TIMEOUT, IONOS_API_TOKEN, IONOS_BASE_URL, IONOS_MODEL
 from services.extraction.llm_client import LLMClient
 from utils.logger import get_logger
 
@@ -126,7 +126,7 @@ def analyze_papers(papers: list[dict]) -> dict:
             system=_ANALYSIS_SYSTEM_PROMPT,
             user=_ANALYSIS_USER_TEMPLATE.format(n=len(papers), papers_text=papers_text),
             json_mode=True,
-            timeout=60,
+            timeout=ANALYZE_PAPERS_TIMEOUT,
             tool_name="analyze_papers",
             input_chars=len(papers_text),
         )

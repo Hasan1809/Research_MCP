@@ -1,6 +1,7 @@
 import time
 import httpx
 import xml.etree.ElementTree as ET
+from config import ARXIV_SEARCH_TIMEOUT
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -17,7 +18,7 @@ def fetch_papers(query: str, limit: int) -> list[dict]:
             response = httpx.get(
                 "https://export.arxiv.org/api/query",
                 params={"search_query": query, "max_results": limit},
-                timeout=30,
+                timeout=ARXIV_SEARCH_TIMEOUT,
             )
             if response.status_code == 429:
                 wait = _BACKOFF_BASE * (2 ** attempt)
