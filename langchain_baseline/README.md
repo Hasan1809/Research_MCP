@@ -2,12 +2,16 @@
 
 This directory provides a LangChain-based replica of the research workflow used by the MCP server:
 
-`search -> ingest -> profile -> detect_gaps -> suggest_experiments`
+`workflow_guide -> search -> create_project -> ingest -> profile_job -> add_profiled_papers -> workflow_status -> detect_gaps -> validate_gaps_job -> suggest_experiments -> bibliography -> report`
 
 The goal is comparison, not feature divergence. The LangChain tools reuse the existing Python pipeline logic from `server/`, so the main difference is the orchestration layer:
 
 - MCP version: Claude Desktop or another MCP host decides tool order
 - LangChain version: a LangChain tool-calling agent decides tool order
+
+Both surfaces expose the same workflow guardrails: a first-step workflow guide,
+profile-required project membership, workflow status checks, validated-gap
+experiment generation, bibliography generation, and deterministic report output.
 
 ## Files
 

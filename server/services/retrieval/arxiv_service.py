@@ -8,9 +8,18 @@ logger = get_logger(__name__)
 
 _MAX_RETRIES = 4
 _BACKOFF_BASE = 5  # seconds; wait = base * 2^attempt
+_RATE_LIMIT_COOLDOWN_SECONDS = 300
+_rate_limited_until = 0.0
 
 
 def fetch_papers(query: str, limit: int) -> list[dict]:
+    global _rate_limited_until
+    now = time.time()
+    if now < _rate_limited_until:
+        raise RuntimeError(
+            f"arXiv is temporarily skipped after a recent 429; retry after {int(_rate_limited_until - now)}s"
+        )
+
     logger.info("arXiv request: query=%r limit=%d", query, limit)
     last_exc = None
     for attempt in range(_MAX_RETRIES):
@@ -21,6 +30,12 @@ def fetch_papers(query: str, limit: int) -> list[dict]:
                 timeout=ARXIV_SEARCH_TIMEOUT,
             )
             if response.status_code == 429:
+                _rate_limited_until = time.time() + _RATE_LIMIT_COOLDOWN_SECONDS
+                logger.warning(
+                    "arXiv rate-limited (429) - skipping arXiv for %ds",
+                    _RATE_LIMIT_COOLDOWN_SECONDS,
+                )
+                raise RuntimeError("arXiv returned 429; source is in cooldown")
                 wait = _BACKOFF_BASE * (2 ** attempt)
                 logger.warning(
                     "arXiv rate-limited (429) — attempt %d/%d, retrying in %ds",

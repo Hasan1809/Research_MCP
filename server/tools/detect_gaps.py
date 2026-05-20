@@ -51,14 +51,30 @@ def detect_gaps_tool(papers: list[dict] = None, project: str = None) -> dict:
         raise ValueError(error)
 
     profiles = []
+    missing_profiles = []
     for ref in papers:
         paper_id = ref.get("paper_id")
         source = ref.get("source")
         try:
             profiles.append(_load_paper_data(paper_id, source))
         except FileNotFoundError as e:
-            log_invocation("detect_gaps_tool", arguments, error=str(e))
-            raise
+            missing_profiles.append({
+                "paper_id": paper_id,
+                "source": source,
+                "error": str(e),
+            })
+
+    if missing_profiles:
+        error = (
+            "detect_gaps_tool requires profiles for every project paper. "
+            "Run start_batch_build_profiles_job, wait for completion, then add only successful profiled papers."
+        )
+        log_invocation(
+            "detect_gaps_tool",
+            arguments,
+            error=f"{error} Missing: {missing_profiles}",
+        )
+        raise FileNotFoundError(f"{error} Missing profiles: {missing_profiles}")
 
     try:
         result, raw = detect_gaps(profiles)

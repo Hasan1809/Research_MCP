@@ -1,4 +1,5 @@
 import os
+import re
 import sys
 import time
 from collections import deque
@@ -29,7 +30,7 @@ from langchain_baseline.utils.usage_tracker import log_usage
 init_logging()
 logger = get_logger(__name__)
 
-DEFAULT_NUM_PAPERS = 3
+DEFAULT_NUM_PAPERS = 8
 
 RESEARCH_OUTPUT_TEMPLATE = """---
 ## Research Analysis: {topic}
@@ -67,6 +68,28 @@ def get_resolved_orchestrator_model() -> str:
     if provider == "anthropic":
         return os.environ.get("LC_ORCHESTRATOR_MODEL", "claude-3-5-haiku-latest")
     return os.environ.get("LC_ORCHESTRATOR_MODEL", os.environ.get("IONOS_MODEL", ""))
+
+
+def normalize_research_topic(user_request: str) -> str:
+    """Extract the research topic from common natural-language workflow requests."""
+    text = (user_request or "").strip()
+    if not text:
+        return "Model Context Protocol security"
+    lowered = text.lower()
+    prefixes = [
+        "find research gaps and suggest experiments for",
+        "find gaps and suggest experiments for",
+        "find research gaps for",
+        "find gaps for",
+        "suggest experiments for",
+    ]
+    for prefix in prefixes:
+        if lowered.startswith(prefix):
+            return text[len(prefix):].strip(" .:")
+    match = re.search(r"\bfor\s+(.+?)(?:\s+using\s+research\s+agent)?\.?$", text, flags=re.IGNORECASE)
+    if match and any(verb in lowered for verb in ("find", "gap", "experiment", "research agent")):
+        return match.group(1).strip(" .:")
+    return text
 
 
 def _extract_usage(response: Any) -> dict[str, int]:
@@ -165,7 +188,96 @@ def create_orchestrator_llm(usage_handler: BaseCallbackHandler):
     )
 
 
+def _build_full_workflow_prompt(topic: str, num_papers: int = DEFAULT_NUM_PAPERS) -> str:
+    topic = normalize_research_topic(topic)
+    search_limit = max(num_papers + 6, 12)
+    return f"""Execute the complete research-agent workflow for: "{topic}"
+
+INTENT:
+Use this workflow whenever the user asks to find gaps, identify research gaps,
+suggest experiments, build a research project, or run the whole workflow for a topic.
+
+STEPS - execute every step in order, do not skip any:
+1. get_research_workflow_guide(topic="{topic}", project="{topic}", num_papers={num_papers})
+2. search_papers(query="{topic}", limit={search_limit})
+3. Pick up to {num_papers} relevant arxiv or semantic_scholar papers. Only select
+   papers whose title or abstract directly mentions the research topic. Reject
+   papers that are only loosely related by domain, generic surveys outside the
+   topic, or papers whose source cannot be ingested.
+4. Call create_project(name="{topic}", overwrite=True) so this run starts from a clean project manifest.
+5. Call batch_ingest_papers once with all selected papers as a list. Use the
+   paper_id and source exactly as returned by search_papers; never pass a URL
+   as paper_id. If some papers fail ingestion, continue with successful papers.
+6. Call start_batch_build_profiles_job once with only successfully ingested papers
+   as a list and max_workers=2. Poll get_job_status(job_id, wait_seconds=180)
+   until status is completed, then call get_job_result(job_id). Continue only
+   with successfully profiled papers.
+7. Call batch_add_to_project once using project name "{topic}" and only successfully
+   profiled papers as a list.
+8. Call get_workflow_status(project="{topic}") and verify profiled_count equals
+   paper_count before detecting gaps.
+9. Call detect_research_gaps(project="{topic}").
+10. Call start_batch_validate_gaps_job(project="{topic}", max_workers=2).
+   Poll get_job_status(job_id, wait_seconds=180) until completed, then call get_job_result(job_id).
+11. Call suggest_research_experiments(project="{topic}", compact=True). This step
+   is mandatory. It must use only included/refined validated gaps. If all gaps
+   are already addressed, accept zero experiments and do not invent any.
+12. Call generate_bibliography(project_name="{topic}", format="bibtex", save=True).
+13. Call generate_project_report(project="{topic}") and include the returned report_path in the final answer.
+14. Call get_workflow_status(project="{topic}") once more and use its counts/artifact paths in the final answer.
+
+OUTPUT - after all required steps are complete, write your response in this exact
+format and nothing else:
+
+## Papers Analyzed
+For each paper: paper_id, title, type, one sentence on core contribution.
+
+## Research Gaps
+For each gap from detect_research_gaps output:
+- Gap name
+- One sentence description
+- Which paper IDs support it
+
+## Methodological Gaps
+Same format as Research Gaps.
+
+## Contradictions
+For each contradiction: what conflicts, which paper IDs, one sentence on why it matters.
+
+## Suggested Experiments
+For each experiment from suggest_research_experiments output:
+- Title
+- One sentence hypothesis
+- One sentence method
+- Feasibility rating
+- Which paper IDs it builds on
+
+## Field Summary
+The field_summary string from detect_research_gaps output verbatim.
+
+## Report
+The report_path returned by generate_project_report.
+
+RULES:
+- Use project "{topic}" consistently for every project-scoped tool call.
+- Select no more than {num_papers} papers unless the user explicitly asks for a larger corpus.
+- Do not stop after search, ingest, profiling, gap detection, or validation. Continue until report generation finishes.
+- Search results are not a valid final answer.
+- You may only produce the final answer after generate_project_report and the final get_workflow_status call have completed.
+- If fewer than 2 papers are successfully profiled, stop and explain that the workflow cannot detect cross-paper gaps.
+- If asked to validate a gap after this workflow, call validate_research_gap(gap=<gap text>, project="{topic}").
+- Do not add budget estimates, timelines, FTE counts, or resource requirements.
+- Do not add executive summaries, next steps, or collaboration sections.
+- Do not add any sections not listed in the OUTPUT format above.
+- Do not add commentary before or after the output.
+- Keep every field to one sentence maximum unless stated otherwise.
+- The tool outputs are the deliverable. Present them and stop."""
+
+
 def build_research_topic_prompt(topic: str, num_papers: int = DEFAULT_NUM_PAPERS) -> str:
+    return _build_full_workflow_prompt(topic, num_papers)
+    # Legacy prompt text is intentionally left unreachable for a small, low-risk
+    # patch. It can be removed in a later formatting-only cleanup.
     return f"""Execute this research workflow for: "{topic}"
 
 STEPS — execute every step in order, do not skip any:
@@ -250,11 +362,18 @@ def create_agent(verbose: bool = True) -> AgentExecutor:
         (
             "system",
             "You are a research assistant using tools to analyze academic papers. "
-            "When the user gives a research topic, execute the full workflow silently: "
-            "search, select the most relevant arxiv or semantic_scholar papers, batch ingest, "
-            "batch profile, batch add to a project, detect gaps, and suggest experiments. "
+            "When the user asks to find gaps, suggest experiments, or gives a research topic, execute the full workflow silently: "
+            "call get_research_workflow_guide, search, select the most relevant arxiv or semantic_scholar papers, "
+            "create or overwrite a clean project, batch ingest, start the profile job, batch add successful profiled papers, "
+            "check workflow status, detect gaps, validate gaps, suggest experiments, generate bibliography, generate the report, "
+            "and check workflow status again. "
             "Use paper_id and source exactly "
-            "as returned by search_papers, never a URL or placeholder. Do not stop after tool calls. After the tools are complete, "
+            "as returned by search_papers, never a URL or placeholder. Use only successfully ingested/profiled papers. "
+            "Do not create separate Markdown, SVG, index, or planning files outside generate_project_report. "
+            "Do not add budgets, team sizes, timelines, GPU estimates, or leadership-review language unless the user asks. "
+            "Search results are not a valid final answer. Do not stop after search, ingestion, profiling, gap detection, or validation. "
+            "You may only produce the final answer after generate_project_report and a final get_workflow_status call have completed. "
+            "Do not stop after intermediate tool calls. After all workflow tools are complete, "
             "you must always produce a final markdown answer that matches the exact structure "
             "requested by the user. Do not output raw JSON or narrate tool execution.",
         ),
@@ -267,13 +386,14 @@ def create_agent(verbose: bool = True) -> AgentExecutor:
         agent=agent,
         tools=TOOLS,
         verbose=verbose,
-        max_iterations=14,
+        max_iterations=24,
         early_stopping_method="generate",
     )
 
 
 def main() -> None:
-    topic = sys.argv[1] if len(sys.argv) > 1 else "Model Context Protocol security"
+    user_request = sys.argv[1] if len(sys.argv) > 1 else "Model Context Protocol security"
+    topic = normalize_research_topic(user_request)
     query = build_research_topic_prompt(topic, DEFAULT_NUM_PAPERS)
     logger.info("Starting LangChain baseline agent")
     logger.info("Session directory: %s", get_session_dir())

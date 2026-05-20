@@ -12,6 +12,7 @@ from dotenv import load_dotenv
 ROOT_DIR = Path(__file__).resolve().parents[2]
 SERVER_DIR = ROOT_DIR / "server"
 SERVER_SERVICES_DIR = SERVER_DIR / "services"
+SERVER_TOOLS_DIR = SERVER_DIR / "tools"
 BASELINE_UTILS_DIR = ROOT_DIR / "langchain_baseline" / "utils"
 
 load_dotenv(ROOT_DIR / ".env")
@@ -32,6 +33,7 @@ def _ensure_namespace_package(name: str, path: Path) -> None:
 
 
 _ensure_namespace_package("services", SERVER_SERVICES_DIR)
+_ensure_namespace_package("tools", SERVER_TOOLS_DIR)
 _ensure_namespace_package("utils", BASELINE_UTILS_DIR)
 
 from config import (
@@ -41,6 +43,7 @@ from config import (
     FULL_TEXT_CHAR_LIMIT,
     IONOS_MODEL,
     LLM_TEMPERATURE,
+    WORKFLOW_MAX_PAPERS,
 )
 from services.analysis.experiment_suggester import suggest_experiments_for_papers
 from services.analysis.gap_validator import batch_validate_gaps, validate_gap
@@ -57,16 +60,19 @@ from services.paper_repository import load_profile, load_profile_or_insights, sa
 from services.project_manager import (
     add_paper_to_project,
     batch_add_papers_to_project,
+    clear_project,
     create_project,
     get_project_papers,
     list_projects,
 )
 from services.reports.project_report import generate_project_report
+from services.workflow_status import get_workflow_status
 from services.retrieval.aggregator import fetch_papers
 from services.retrieval.semantic_scholar_service import resolve_pdf_url
 from services.retrieval.vector_store import query_chunks
 from langchain_baseline.utils.logger import get_logger, get_session_dir, init_logging, log_invocation
 from langchain_baseline.utils.usage_tracker import log_usage
+from langchain_baseline.utils.usage_tracker import get_usage_summary
 
 logger = get_logger(__name__)
 
@@ -84,6 +90,64 @@ _PRIORITY_SECTION_KEYWORDS = {
     "abstract", "introduction", "conclusion", "conclusions",
     "discussion", "method", "methods", "approach", "related work",
 }
+
+
+def research_workflow_guide_impl(
+    topic: str,
+    project: str | None = None,
+    num_papers: int = 8,
+) -> dict:
+    """Return the canonical workflow contract for normal research-agent requests."""
+    requested = max(2, min(int(num_papers or 8), WORKFLOW_MAX_PAPERS))
+    project_name = (project or topic or "research-project").strip()
+    result = {
+        "topic": topic,
+        "project": project_name,
+        "paper_selection_limit": requested,
+        "normal_max_papers": WORKFLOW_MAX_PAPERS,
+        "tool_order": [
+            "search_papers",
+            "create_project(overwrite=True)",
+            "batch_ingest_papers",
+            "start_batch_build_profiles_job",
+            "batch_add_to_project",
+            "get_workflow_status",
+            "detect_research_gaps",
+            "start_batch_validate_gaps_job",
+            "suggest_research_experiments",
+            "generate_bibliography",
+            "generate_project_report",
+            "get_workflow_status",
+        ],
+        "guardrails": [
+            "Do not create separate Markdown/SVG/index files outside generate_project_report.",
+            "Do not add budgets, team sizes, timelines, or compute estimates unless asked.",
+            "Search results are not a valid final answer.",
+            "Only produce the final answer after generate_project_report and the final get_workflow_status call complete.",
+            "Use only included validated gaps for experiments.",
+            "Keep the final answer compact and based on tool outputs.",
+        ],
+        "final_answer_contract": {
+            "required_fields": [
+                "project",
+                "paper_count",
+                "gap_count",
+                "included_validated_gap_count",
+                "excluded_validated_gap_count",
+                "experiment_count",
+                "bibliography_path",
+                "report_path",
+                "warnings",
+            ],
+            "style": "compact status summary",
+        },
+    }
+    log_invocation(
+        "lc_research_workflow_guide",
+        {"topic": topic, "project": project, "num_papers": num_papers},
+        output={"project": project_name, "paper_selection_limit": requested},
+    )
+    return result
 
 
 def _paper_cache_path(source: str, paper_id: str) -> str:
@@ -165,7 +229,10 @@ def _normalize_papers_input(papers: Any) -> list[dict]:
         source = item.get("source")
         if not paper_id or not source:
             raise ValueError("Each papers item must contain paper_id and source.")
-        normalized.append({"paper_id": str(paper_id), "source": str(source)})
+        source_text = str(source).strip().lower()
+        if source_text in {"semanticscholar", "semantic-scholar", "semantic scholar"}:
+            source_text = "semantic_scholar"
+        normalized.append({"paper_id": str(paper_id).strip(), "source": source_text})
     return normalized
 
 
@@ -274,9 +341,15 @@ def ingest_paper_impl(paper_id: str, source: str) -> dict:
     return result
 
 
-def batch_ingest_papers_impl(papers: list[dict], max_workers: int | None = None) -> dict:
+def batch_ingest_papers_impl(
+    papers: list[dict],
+    max_workers: int | None = None,
+    allow_large_batch: bool = False,
+) -> dict:
     """Ingest multiple papers concurrently."""
+    papers = _normalize_papers_input(papers)
     succeeded = []
+    succeeded_papers = []
     failed = {}
 
     if not papers:
@@ -284,9 +357,23 @@ def batch_ingest_papers_impl(papers: list[dict], max_workers: int | None = None)
             "success_count": 0,
             "error_count": 0,
             "succeeded": succeeded,
+            "succeeded_papers": succeeded_papers,
             "failed": failed,
         })
-        return {"succeeded": succeeded, "failed": failed}
+        return {"succeeded": succeeded, "succeeded_papers": succeeded_papers, "failed": failed}
+
+    if len(papers) > WORKFLOW_MAX_PAPERS and not allow_large_batch:
+        error = (
+            f"batch_ingest_papers received {len(papers)} papers. The normal workflow cap is "
+            f"{WORKFLOW_MAX_PAPERS}; select the most relevant papers or pass allow_large_batch=True "
+            "only when the user explicitly requested a larger corpus."
+        )
+        log_invocation(
+            "lc_batch_ingest_papers",
+            {"papers": papers, "allow_large_batch": allow_large_batch},
+            error=error,
+        )
+        raise ValueError(error)
 
     if max_workers is None:
         max_workers = BATCH_INGEST_MAX_WORKERS
@@ -305,6 +392,10 @@ def batch_ingest_papers_impl(papers: list[dict], max_workers: int | None = None)
             try:
                 future.result()
                 succeeded.append(paper_id)
+                succeeded_papers.append({
+                    "paper_id": paper_id,
+                    "source": ref.get("source", ""),
+                })
                 logger.info("Ingest complete: paper_id=%r", paper_id)
             except Exception as e:
                 failed[paper_id] = str(e)
@@ -315,13 +406,14 @@ def batch_ingest_papers_impl(papers: list[dict], max_workers: int | None = None)
         len(succeeded),
         len(failed),
     )
-    log_invocation("lc_batch_ingest_papers", {"papers": papers}, output={
+    log_invocation("lc_batch_ingest_papers", {"papers": papers, "allow_large_batch": allow_large_batch}, output={
         "success_count": len(succeeded),
         "error_count": len(failed),
         "succeeded": succeeded,
+        "succeeded_papers": succeeded_papers,
         "failed": failed,
     })
-    return {"succeeded": succeeded, "failed": failed}
+    return {"succeeded": succeeded, "succeeded_papers": succeeded_papers, "failed": failed}
 
 
 def build_paper_profile_impl(paper_id: str, source: str, force: bool = False) -> dict:
@@ -457,12 +549,12 @@ def batch_build_profiles_impl(
     return {"profiles": profiles, "failed": failed}
 
 
-def create_project_impl(name: str) -> dict:
+def create_project_impl(name: str, overwrite: bool = False) -> dict:
     """Create or return a saved research project."""
-    logger.info("LangChain baseline create project: name=%r", name)
-    arguments = {"name": name}
+    logger.info("LangChain baseline create project: name=%r overwrite=%s", name, overwrite)
+    arguments = {"name": name, "overwrite": overwrite}
     try:
-        result = create_project(name)
+        result = create_project(name, overwrite=overwrite)
         log_invocation("lc_create_project", arguments, output={
             "name": result.get("name"),
             "paper_count": len(result.get("papers", [])),
@@ -470,6 +562,23 @@ def create_project_impl(name: str) -> dict:
         return result
     except Exception as e:
         log_invocation("lc_create_project", arguments, error=str(e))
+        raise
+
+
+def clear_project_impl(name: str) -> dict:
+    """Remove all papers from an existing project manifest."""
+    logger.info("LangChain baseline clear project: name=%r", name)
+    arguments = {"name": name}
+    try:
+        result = clear_project(name)
+        log_invocation("lc_clear_project", arguments, output={
+            "project": result.get("project"),
+            "removed_count": result.get("removed_count"),
+            "paper_count": result.get("paper_count"),
+        })
+        return result
+    except Exception as e:
+        log_invocation("lc_clear_project", arguments, error=str(e))
         raise
 
 
@@ -500,7 +609,24 @@ def batch_add_to_project_impl(name: str, papers: list[dict] | str) -> dict:
     logger.info("LangChain baseline batch add to project: name=%r count=%d", name, len(papers))
     arguments = {"name": name, "papers": papers}
     try:
-        result = batch_add_papers_to_project(name, papers)
+        normalized = []
+        skipped_unprofiled = []
+        for index, ref in enumerate(papers):
+            if load_profile(ref["source"], ref["paper_id"]) is None:
+                skipped_unprofiled.append({
+                    "index": index,
+                    "paper_id": ref["paper_id"],
+                    "source": ref["source"],
+                    "reason": "profile not found; run start_batch_build_profiles_job first and add only successful papers",
+                })
+                continue
+            normalized.append(ref)
+        result = batch_add_papers_to_project(name, normalized)
+        if skipped_unprofiled:
+            result["skipped"] = [*skipped_unprofiled, *result.get("skipped", [])]
+            summary = result.setdefault("summary", {})
+            summary["input_count"] = len(papers)
+            summary["skipped_count"] = len(result["skipped"])
         log_invocation("lc_batch_add_to_project", arguments, output=result)
         return result
     except Exception as e:
@@ -520,6 +646,18 @@ def list_projects_impl() -> list[dict]:
     except Exception as e:
         log_invocation("lc_list_projects", {}, error=str(e))
         raise
+
+
+def usage_summary_impl() -> dict:
+    """Return token/cost usage summary for the current LangChain baseline session."""
+    logger.info("LangChain baseline usage summary")
+    result = get_usage_summary()
+    log_invocation("lc_usage_summary", {}, output={
+        "total_calls": result.get("total_calls"),
+        "total_tokens": result.get("total_tokens"),
+        "total_cost_usd": result.get("total_cost_usd"),
+    })
+    return result
 
 
 def generate_bibliography_impl(
@@ -609,6 +747,24 @@ def generate_project_report_impl(
         raise
 
 
+def get_workflow_status_impl(project: str) -> dict:
+    """Inspect saved workflow state and recommend the next tool."""
+    logger.info("LangChain baseline workflow status: project=%r", project)
+    arguments = {"project": project}
+    try:
+        result = get_workflow_status(project)
+        log_invocation("lc_get_workflow_status", arguments, output={
+            "project": result.get("project"),
+            "paper_count": result.get("paper_count"),
+            "profiled_count": result.get("profiled_count"),
+            "next_tool": (result.get("next_step") or {}).get("tool"),
+        })
+        return result
+    except Exception as e:
+        log_invocation("lc_get_workflow_status", arguments, error=str(e))
+        raise
+
+
 def detect_gaps_impl(papers: list[dict] | str = None, project: str = None) -> dict:
     if project:
         papers = get_project_papers(project)
@@ -620,7 +776,18 @@ def detect_gaps_impl(papers: list[dict] | str = None, project: str = None) -> di
         raise ValueError("At least 2 papers are required for gap detection.")
 
     arguments = {"papers": papers, "project": project}
-    profiles = [load_profile_or_insights(ref["source"], ref["paper_id"]) for ref in papers]
+    profiles = []
+    missing_profiles = []
+    for ref in papers:
+        try:
+            profiles.append(load_profile_or_insights(ref["source"], ref["paper_id"]))
+        except FileNotFoundError as e:
+            missing_profiles.append({**ref, "error": str(e)})
+    if missing_profiles:
+        raise FileNotFoundError(
+            "detect_research_gaps requires profiles for every project paper. "
+            f"Missing profiles: {missing_profiles}"
+        )
     result, _ = detect_gaps(profiles)
 
     _ANALYSIS_DIR.mkdir(parents=True, exist_ok=True)
@@ -801,14 +968,18 @@ __all__ = [
     "batch_ingest_papers_impl",
     "batch_validate_gaps_impl",
     "build_paper_profile_impl",
+    "clear_project_impl",
     "create_project_impl",
     "detect_gaps_impl",
     "generate_bibliography_impl",
     "generate_project_report_impl",
+    "get_workflow_status_impl",
     "ingest_paper_impl",
     "list_projects_impl",
+    "research_workflow_guide_impl",
     "search_papers_impl",
     "suggest_experiments_impl",
+    "usage_summary_impl",
     "validate_gap_impl",
     "get_logger",
     "get_session_dir",

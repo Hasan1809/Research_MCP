@@ -5,15 +5,24 @@ from langchain_core.tools import tool
 from langchain_baseline.services import (
     add_to_project_impl,
     batch_add_to_project_impl,
+    clear_project_impl,
     create_project_impl,
     list_projects_impl,
 )
 
 
 @tool
-def create_project(name: str) -> dict:
+def create_project(name: str, overwrite: bool | str = False) -> dict:
     """Create or return a saved research project."""
-    return create_project_impl(name=name)
+    if isinstance(overwrite, str):
+        overwrite = overwrite.strip().lower() in {"1", "true", "yes", "y"}
+    return create_project_impl(name=name, overwrite=overwrite)
+
+
+@tool
+def clear_project(name: str) -> dict:
+    """Remove all papers from an existing project manifest."""
+    return clear_project_impl(name=name)
 
 
 @tool

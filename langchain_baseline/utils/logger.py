@@ -57,7 +57,12 @@ def get_session_dir() -> str:
 
 
 def log_invocation(tool_name: str, arguments: dict, output=None, error: Optional[str] = None) -> None:
-    global _invocation_counter
+    global _invocation_counter, _tools_dir
+    if not _initialized or not _tools_dir:
+        init_logging()
+    if not _tools_dir:
+        _tools_dir = os.path.join(get_session_dir(), "tools")
+    os.makedirs(_tools_dir, exist_ok=True)
     _invocation_counter += 1
     filename = f"{_invocation_counter:03d}_{tool_name}.json"
     path = os.path.join(_tools_dir, filename)

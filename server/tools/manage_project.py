@@ -4,6 +4,7 @@ from services.project_manager import (
     batch_add_papers_to_project,
     clear_project,
 )
+from services.paper_repository import load_profile
 from utils.logger import get_logger, log_invocation
 
 logger = get_logger(__name__)
@@ -31,7 +32,17 @@ def create_project_tool(name: str, overwrite: bool = False) -> dict:
         log_invocation("create_project_tool", arguments, error=str(e))
         raise
 
-def batch_add_to_project_tool(name: str, papers: list[dict]) -> dict:
+def _normalize_source(source: str) -> str:
+    normalized = str(source or "").strip().lower()
+    if normalized in {"semanticscholar", "semantic-scholar", "semantic scholar"}:
+        return "semantic_scholar"
+    return normalized
+
+
+def batch_add_to_project_tool(
+    name: str,
+    papers: list[dict],
+) -> dict:
     """
     Add multiple papers to a project in one operation.
 
@@ -42,10 +53,38 @@ def batch_add_to_project_tool(name: str, papers: list[dict]) -> dict:
     Returns:
         Structured result with added, skipped, duplicate, failed, and summary counts.
     """
-    logger.info("Tool invoked: batch_add_to_project name=%r count=%d", name, len(papers or []))
-    arguments = {"name": name, "papers": papers}
+    logger.info(
+        "Tool invoked: batch_add_to_project name=%r count=%d require_profiles=True",
+        name,
+        len(papers or []),
+    )
+    arguments = {"name": name, "papers": papers, "require_profiles": True}
     try:
-        result = batch_add_papers_to_project(name, papers)
+        normalized = []
+        skipped_unprofiled = []
+        for index, ref in enumerate(papers or []):
+            if not isinstance(ref, dict):
+                normalized.append(ref)
+                continue
+            paper_id = str(ref.get("paper_id") or "").strip()
+            source = _normalize_source(ref.get("source"))
+            clean_ref = {**ref, "paper_id": paper_id, "source": source}
+            if paper_id and source and load_profile(source, paper_id) is None:
+                skipped_unprofiled.append({
+                    "index": index,
+                    "paper_id": paper_id,
+                    "source": source,
+                    "reason": "profile not found; run start_batch_build_profiles_job first and add only successful papers",
+                })
+                continue
+            normalized.append(clean_ref)
+
+        result = batch_add_papers_to_project(name, normalized)
+        if skipped_unprofiled:
+            result["skipped"] = [*skipped_unprofiled, *result.get("skipped", [])]
+            summary = result.setdefault("summary", {})
+            summary["input_count"] = len(papers or [])
+            summary["skipped_count"] = len(result["skipped"])
         log_invocation("batch_add_to_project_tool", arguments, output=result)
         return result
     except Exception as e:

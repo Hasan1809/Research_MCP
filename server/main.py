@@ -16,6 +16,8 @@ from tools.validate_gap import validate_gap_tool
 from tools.usage_summary import usage_summary_tool
 from tools.generate_bibliography import generate_bibliography_tool
 from tools.generate_project_report import generate_project_report_tool
+from tools.research_workflow_guide import get_research_workflow_guide_tool
+from tools.workflow_status import get_workflow_status_tool
 from tools.jobs import (
     cancel_job_tool,
     get_job_result_tool,
@@ -29,22 +31,24 @@ logger = get_logger(__name__)
 
 mcp = FastMCP("research-agent")
 
+mcp.tool()(get_research_workflow_guide_tool)
 mcp.tool()(search_papers_tool)
-mcp.tool()(batch_ingest_papers_tool)
-mcp.tool()(detect_gaps_tool)
 mcp.tool()(create_project_tool)
-mcp.tool()(batch_add_to_project_tool)
-mcp.tool()(clear_project_tool)
-mcp.tool()(suggest_experiments_tool)
-mcp.tool()(validate_gap_tool)
-mcp.tool()(usage_summary_tool)
-mcp.tool()(generate_bibliography_tool)
-mcp.tool()(generate_project_report_tool)
+mcp.tool()(batch_ingest_papers_tool)
 mcp.tool(name="start_batch_build_profiles_job")(start_batch_build_profiles_job_tool)
-mcp.tool(name="start_batch_validate_gaps_job")(start_batch_validate_gaps_job_tool)
 mcp.tool()(get_job_status_tool)
 mcp.tool()(get_job_result_tool)
+mcp.tool()(batch_add_to_project_tool)
+mcp.tool()(get_workflow_status_tool)
+mcp.tool()(detect_gaps_tool)
+mcp.tool(name="start_batch_validate_gaps_job")(start_batch_validate_gaps_job_tool)
+mcp.tool()(suggest_experiments_tool)
+mcp.tool()(generate_bibliography_tool)
+mcp.tool()(generate_project_report_tool)
+mcp.tool()(usage_summary_tool)
 mcp.tool()(cancel_job_tool)
+mcp.tool()(clear_project_tool)
+mcp.tool()(validate_gap_tool)
 
 from prompts import register_prompts
 register_prompts(mcp)

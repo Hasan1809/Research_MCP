@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from config import DATA_DIR
+from services.citations import generate_bibliography
 from services.paper_repository import load_paper_metadata
 from services.project_manager import get_project
 from utils.logger import get_logger
@@ -55,7 +56,7 @@ def _latest_json(paths: list[Path], predicate) -> tuple[dict | None, str]:
 
 def _find_latest_gap_analysis(project_papers: list[dict]) -> tuple[dict | None, str]:
     return _latest_json(
-        list(_ANALYSIS_DIR.glob("gap_analysis_*.json")),
+        list(_ANALYSIS_DIR.glob("gap_analysis_*.json")) + list(_ANALYSIS_DIR.glob("lc_gap_analysis_*.json")),
         lambda data: _matching_papers(data.get("papers", []), project_papers),
     )
 
@@ -305,6 +306,18 @@ def generate_project_report(
         if experiments_path else _find_latest_experiments(papers)
     )
     resolved_bibliography_path = bibliography_path or _find_latest_bibliography(project_name)
+    generated_bibliography = False
+    if include_bibliography and not resolved_bibliography_path and papers:
+        try:
+            bibliography = generate_bibliography(
+                project_name=project_name,
+                format="bibtex",
+                save=True,
+            )
+            resolved_bibliography_path = bibliography.get("artifact_path") or ""
+            generated_bibliography = bool(resolved_bibliography_path)
+        except Exception as e:
+            logger.warning("Could not auto-generate bibliography for report: %s", e)
 
     logger.info(
         "Report artifacts: gap=%s validation=%s experiments=%s bibliography=%s",
@@ -343,6 +356,7 @@ def generate_project_report(
         f"- Validation file: {_artifact_path(validation, resolved_validation_path)}",
         f"- Experiments file: {_artifact_path(experiments_data, resolved_experiments_path)}",
         f"- Bibliography file: {_value(resolved_bibliography_path)}",
+        f"- Bibliography auto-generated: {generated_bibliography}",
         f"- Included validated gaps: {included_summary_count}",
         f"- Excluded validated gaps: {excluded_summary_count}",
         f"- Experiment count: {len(experiments)}",

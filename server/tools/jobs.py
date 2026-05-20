@@ -7,6 +7,7 @@ from services.jobs.job_manager import (
     start_batch_build_profiles_job,
     start_batch_validate_gaps_job,
 )
+from config import WORKFLOW_MAX_PAPERS
 from utils.logger import get_logger, log_invocation
 
 logger = get_logger(__name__)
@@ -16,6 +17,7 @@ def start_batch_build_profiles_job_tool(
     papers: list[dict],
     force: bool = False,
     max_workers: int = 2,
+    allow_large_batch: bool = False,
 ) -> dict:
     """
     Start a long-running batch profile build as a background job.
@@ -27,6 +29,7 @@ def start_batch_build_profiles_job_tool(
         "paper_count": len(papers or []),
         "force": force,
         "max_workers": max_workers,
+        "allow_large_batch": allow_large_batch,
     }
     logger.info(
         "Tool invoked: start_batch_build_profiles_job paper_count=%d force=%s max_workers=%d",
@@ -34,6 +37,14 @@ def start_batch_build_profiles_job_tool(
         force,
         max_workers,
     )
+    if len(papers or []) > WORKFLOW_MAX_PAPERS and not allow_large_batch:
+        error = (
+            f"start_batch_build_profiles_job received {len(papers or [])} papers. "
+            f"The normal workflow cap is {WORKFLOW_MAX_PAPERS}; select the most relevant "
+            "papers or pass allow_large_batch=True only when the user explicitly requested a larger corpus."
+        )
+        log_invocation("start_batch_build_profiles_job", arguments, error=error)
+        raise ValueError(error)
     result = start_batch_build_profiles_job(
         papers=papers,
         force=force,
