@@ -202,6 +202,9 @@ STEPS - execute every step in order, do not skip any:
 2. Plan 2-4 academic search queries yourself. For niche terms, include the user
    term plus broader scholarly terms that capture the same research area.
 3. Call search_papers once for each planned query, using limit={search_limit}.
+   You must make at least 2 distinct search_papers calls before creating the
+   project. If the literal topic query returns off-topic results, search broader
+   scholarly terms for the same area before selecting papers.
 4. Pick up to {num_papers} relevant arxiv or semantic_scholar papers across all results. Only select
    papers whose title or abstract directly mentions the research topic. Reject
    papers that are only loosely related by domain, generic surveys outside the
@@ -237,6 +240,7 @@ RULES:
 - Use project "{topic}" consistently for every project-scoped tool call.
 - Select no more than {num_papers} papers unless the user explicitly asks for a larger corpus.
 - Do not stop after search, ingest, profiling, gap detection, or validation. Continue until report generation finishes.
+- Never say you will call a tool next; call the tool instead.
 - Search results are not a valid final answer.
 - You may only produce the final answer after generate_project_report and the final get_workflow_status call have completed.
 - If fewer than 2 papers are successfully profiled, stop and explain that the workflow cannot detect cross-paper gaps.
@@ -250,8 +254,6 @@ RULES:
 
 def build_research_topic_prompt(topic: str, num_papers: int = DEFAULT_NUM_PAPERS) -> str:
     return _build_full_workflow_prompt(topic, num_papers)
-    # Legacy prompt text is intentionally left unreachable for a small, low-risk
-    # patch. It can be removed in a later formatting-only cleanup.
     return f"""Execute this research workflow for: "{topic}"
 
 STEPS — execute every step in order, do not skip any:
@@ -343,10 +345,12 @@ def create_agent(verbose: bool = True) -> AgentExecutor:
             "and check workflow status again. "
             "Use paper_id and source exactly "
             "as returned by search_papers, never a URL or placeholder. Use only successfully ingested/profiled papers. "
+            "Make at least 2 distinct search_papers calls with different academic queries before creating the project. "
             "Do not create separate Markdown, SVG, index, or planning files outside generate_project_report. "
             "Do not create visual outputs, diagrams, charts, SVGs, or summary visualizations. "
             "Do not add budgets, team sizes, timelines, GPU estimates, or leadership-review language unless the user asks. "
             "Search results are not a valid final answer. Do not stop after search, ingestion, profiling, gap detection, or validation. "
+            "Never say you will call a tool next; call the tool instead. "
             "You may only produce the final answer after generate_project_report and a final get_workflow_status call have completed. "
             "Do not stop after intermediate tool calls. After all workflow tools are complete, "
             "you must paste the report_markdown returned by generate_project_report into chat. "

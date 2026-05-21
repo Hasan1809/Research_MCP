@@ -40,7 +40,8 @@ def get_research_workflow_guide_tool(
                 "tool": "search_papers_tool",
                 "instruction": (
                     f"Plan 2-4 academic search queries yourself. For niche terms, include the user term plus broader scholarly terms. "
-                    f"Call search_papers_tool once per query, then select at most {requested} directly relevant papers across all results."
+                    f"Call search_papers_tool once per query, making at least 2 distinct search_papers_tool calls before project creation. "
+                    f"Then select at most {requested} directly relevant papers across all results."
                 ),
             },
             {
@@ -104,6 +105,7 @@ def get_research_workflow_guide_tool(
             "Do not create visual outputs, diagrams, SVGs, charts, or summary visualizations.",
             "Do not add budget, team size, timelines, compute estimates, or implementation plans unless the user asks.",
             "Search results are not a valid final answer.",
+            "Never say you will call a tool next; call the tool instead.",
             "Do not stop after gap detection or validation; continue through experiments, bibliography, and report.",
             "Only produce the final answer after generate_project_report_tool and the final get_workflow_status_tool call complete.",
             "The final chat answer must be the report_markdown returned by generate_project_report_tool, not a new summary.",

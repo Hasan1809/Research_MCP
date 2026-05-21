@@ -27,7 +27,17 @@ def _safe_slug(text: str, max_len: int = 80) -> str:
     return (slug[:max_len].strip("-") or "project")
 
 
+def _clean_optional_path(value: str | Path | None) -> str | Path | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text or text.lower() in {"null", "none", "nil", "undefined", "not available"}:
+        return None
+    return value
+
+
 def _read_json(path: str | Path | None) -> dict | None:
+    path = _clean_optional_path(path)
     if not path:
         return None
     try:
@@ -44,6 +54,10 @@ def _matching_papers(left: list[dict], right: list[dict]) -> bool:
     left_keys = sorted((p.get("source"), p.get("paper_id")) for p in left or [])
     right_keys = sorted((p.get("source"), p.get("paper_id")) for p in right or [])
     return left_keys == right_keys
+
+
+def _same_project_name(left: str | None, right: str | None) -> bool:
+    return _safe_slug(left or "").lower() == _safe_slug(right or "").lower()
 
 
 def _latest_json(paths: list[Path], predicate) -> tuple[dict | None, str]:
@@ -64,7 +78,7 @@ def _find_latest_gap_analysis(project_papers: list[dict]) -> tuple[dict | None, 
 def _find_latest_validation(project: str, project_papers: list[dict]) -> tuple[dict | None, str]:
     return _latest_json(
         list(_VALIDATION_BATCH_DIR.glob("batch_gap_validation_*.json")),
-        lambda data: data.get("project") == project
+        lambda data: _same_project_name(data.get("project"), project)
         and _matching_papers(data.get("project_papers", []), project_papers),
     )
 
@@ -289,6 +303,10 @@ def generate_project_report(
     """Generate a deterministic Markdown report from existing saved artifacts."""
     if format.lower() != "markdown":
         raise ValueError("generate_project_report currently supports only format='markdown'.")
+    gap_analysis_path = _clean_optional_path(gap_analysis_path)
+    validation_batch_path = _clean_optional_path(validation_batch_path)
+    experiments_path = _clean_optional_path(experiments_path)
+    bibliography_path = _clean_optional_path(bibliography_path)
     manifest = get_project(project)
     project_name = manifest["name"]
     papers = manifest.get("papers") or []

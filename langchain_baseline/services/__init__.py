@@ -36,6 +36,12 @@ _ensure_namespace_package("services", SERVER_SERVICES_DIR)
 _ensure_namespace_package("tools", SERVER_TOOLS_DIR)
 _ensure_namespace_package("utils", BASELINE_UTILS_DIR)
 
+import langchain_baseline.utils.logger as _baseline_logger_module
+import langchain_baseline.utils.usage_tracker as _baseline_usage_tracker_module
+
+sys.modules["utils.logger"] = _baseline_logger_module
+sys.modules["utils.usage_tracker"] = _baseline_usage_tracker_module
+
 from config import (
     BATCH_BUILD_PROFILES_MAX_WORKERS,
     BATCH_INGEST_MAX_WORKERS,
@@ -71,8 +77,7 @@ from services.retrieval.aggregator import fetch_papers
 from services.retrieval.semantic_scholar_service import resolve_pdf_url
 from services.retrieval.vector_store import query_chunks
 from langchain_baseline.utils.logger import get_logger, get_session_dir, init_logging, log_invocation
-from langchain_baseline.utils.usage_tracker import log_usage
-from langchain_baseline.utils.usage_tracker import get_usage_summary
+from langchain_baseline.utils.usage_tracker import get_usage_summary, log_usage
 
 logger = get_logger(__name__)
 
@@ -125,6 +130,7 @@ def research_workflow_guide_impl(
             "Do not create visual outputs, diagrams, SVGs, charts, or summary visualizations.",
             "Do not add budgets, team sizes, timelines, or compute estimates unless asked.",
             "Search results are not a valid final answer.",
+            "Never say you will call a tool next; call the tool instead.",
             "Only produce the final answer after generate_project_report and the final get_workflow_status call complete.",
             "The final chat answer must be the report_markdown returned by generate_project_report, not a new summary.",
             "Use only included validated gaps for experiments.",
@@ -377,11 +383,12 @@ def batch_ingest_papers_impl(
 
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
         futures = {
-            pool.submit(ingest_paper_impl, ref["paper_id"], ref["source"]): ref["paper_id"]
+            pool.submit(ingest_paper_impl, ref["paper_id"], ref["source"]): ref
             for ref in papers
         }
         for future in as_completed(futures):
-            paper_id = futures[future]
+            ref = futures[future]
+            paper_id = ref.get("paper_id", "")
             try:
                 future.result()
                 succeeded.append(paper_id)
@@ -707,6 +714,19 @@ def generate_project_report_impl(
     bibliography_path: str | None = None,
     include_bibliography: bool = True,
 ) -> dict:
+    def clean_optional_path(value: str | None) -> str | None:
+        if value is None:
+            return None
+        text = str(value).strip()
+        if not text or text.lower() in {"null", "none", "nil", "undefined", "not available"}:
+            return None
+        return text
+
+    gap_analysis_path = clean_optional_path(gap_analysis_path)
+    validation_batch_path = clean_optional_path(validation_batch_path)
+    experiments_path = clean_optional_path(experiments_path)
+    bibliography_path = clean_optional_path(bibliography_path)
+
     arguments = {
         "project": project,
         "format": format,

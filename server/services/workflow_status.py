@@ -24,6 +24,10 @@ def _safe_slug(text: str, max_len: int = 80) -> str:
     return (slug[:max_len].strip("-") or "project")
 
 
+def _same_project_name(left: str | None, right: str | None) -> bool:
+    return _safe_slug(left or "").lower() == _safe_slug(right or "").lower()
+
+
 def _read_json(path: Path) -> dict | None:
     try:
         return json.loads(path.read_text(encoding="utf-8"))
@@ -56,7 +60,7 @@ def _latest_gap_analysis(papers: list[dict]) -> tuple[dict | None, str]:
 def _latest_validation(project: str, papers: list[dict]) -> tuple[dict | None, str]:
     return _latest_json(
         list(_VALIDATION_BATCH_DIR.glob("batch_gap_validation_*.json")),
-        lambda data: data.get("project") == project
+        lambda data: _same_project_name(data.get("project"), project)
         and _matching_papers(data.get("project_papers", []), papers),
     )
 

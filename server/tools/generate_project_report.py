@@ -19,6 +19,8 @@ def generate_project_report_tool(
     results, experiment suggestions, and bibliography export. This tool does
     not perform new analysis and does not call an LLM; it only summarizes
     existing saved outputs into a reusable report document.
+    Omit optional artifact path arguments unless you have a real file path; do
+    not pass the string "null".
     """
     arguments = {
         "project": project,

@@ -18,6 +18,8 @@ def generate_project_report(
 
     This does not call an LLM. It combines the project manifest, gap analysis,
     batch validation, experiment suggestions, and bibliography artifacts.
+    Omit optional artifact path arguments unless you have a real file path; do
+    not pass the string "null".
     """
     return generate_project_report_impl(
         project=project,

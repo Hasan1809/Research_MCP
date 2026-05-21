@@ -98,7 +98,8 @@ def _matching_papers(left: list[dict], right: list[dict]) -> bool:
 
 def find_existing_gap_analysis(papers: list[dict]) -> dict | None:
     """Return the newest gap analysis artifact matching exactly this paper set."""
-    for path in sorted(_ANALYSIS_DIR.glob("gap_analysis_*.json"), reverse=True):
+    paths = list(_ANALYSIS_DIR.glob("gap_analysis_*.json")) + list(_ANALYSIS_DIR.glob("lc_gap_analysis_*.json"))
+    for path in sorted(paths, reverse=True):
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
             if _matching_papers(data.get("papers", []), papers):
