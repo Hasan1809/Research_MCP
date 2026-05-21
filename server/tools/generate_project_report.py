@@ -40,7 +40,18 @@ def generate_project_report_tool(
             bibliography_path=bibliography_path,
             include_bibliography=include_bibliography,
         )
-        log_invocation("generate_project_report_tool", arguments, output=result)
+        log_invocation("generate_project_report_tool", arguments, output={
+            "project": result.get("project"),
+            "report_path": result.get("report_path"),
+            "paper_count": result.get("paper_count"),
+            "gap_count": result.get("gap_count"),
+            "included_validated_gap_count": result.get("included_validated_gap_count"),
+            "excluded_validated_gap_count": result.get("excluded_validated_gap_count"),
+            "experiment_count": result.get("experiment_count"),
+            "bibliography_path": result.get("bibliography_path"),
+            "report_markdown_chars": len(result.get("report_markdown") or ""),
+            "error": result.get("error"),
+        })
         return result
     except Exception as e:
         log_invocation("generate_project_report_tool", arguments, error=str(e))

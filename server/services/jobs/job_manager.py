@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -43,6 +44,15 @@ def _read_job(job_id: str) -> dict:
     path = _job_path(job_id)
     if not path.exists():
         raise FileNotFoundError(f"No job found for job_id={job_id!r}.")
+    last_exc = None
+    for _ in range(5):
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except PermissionError as e:
+            last_exc = e
+            time.sleep(0.05)
+    if last_exc:
+        raise last_exc
     return json.loads(path.read_text(encoding="utf-8"))
 
 
@@ -52,7 +62,16 @@ def _write_job(job: dict) -> None:
     path = _job_path(job["job_id"])
     temp_path = path.with_suffix(".tmp")
     temp_path.write_text(json.dumps(job, indent=2), encoding="utf-8")
-    temp_path.replace(path)
+    last_exc = None
+    for _ in range(5):
+        try:
+            os.replace(temp_path, path)
+            return
+        except PermissionError as e:
+            last_exc = e
+            time.sleep(0.05)
+    if last_exc:
+        raise last_exc
 
 
 def _update_job(job_id: str, updater: Callable[[dict], None]) -> dict:

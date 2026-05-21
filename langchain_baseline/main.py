@@ -199,64 +199,39 @@ suggest experiments, build a research project, or run the whole workflow for a t
 
 STEPS - execute every step in order, do not skip any:
 1. get_research_workflow_guide(topic="{topic}", project="{topic}", num_papers={num_papers})
-2. search_papers(query="{topic}", limit={search_limit})
-3. Pick up to {num_papers} relevant arxiv or semantic_scholar papers. Only select
+2. Plan 2-4 academic search queries yourself. For niche terms, include the user
+   term plus broader scholarly terms that capture the same research area.
+3. Call search_papers once for each planned query, using limit={search_limit}.
+4. Pick up to {num_papers} relevant arxiv or semantic_scholar papers across all results. Only select
    papers whose title or abstract directly mentions the research topic. Reject
    papers that are only loosely related by domain, generic surveys outside the
    topic, or papers whose source cannot be ingested.
-4. Call create_project(name="{topic}", overwrite=True) so this run starts from a clean project manifest.
-5. Call batch_ingest_papers once with all selected papers as a list. Use the
+5. Call create_project(name="{topic}", overwrite=True) so this run starts from a clean project manifest.
+6. Call batch_ingest_papers once with all selected papers as a list. Use the
    paper_id and source exactly as returned by search_papers; never pass a URL
    as paper_id. If some papers fail ingestion, continue with successful papers.
-6. Call start_batch_build_profiles_job once with only successfully ingested papers
+7. Call start_batch_build_profiles_job once with only successfully ingested papers
    as a list and max_workers=2. Poll get_job_status(job_id, wait_seconds=180)
    until status is completed, then call get_job_result(job_id). Continue only
    with successfully profiled papers.
-7. Call batch_add_to_project once using project name "{topic}" and only successfully
+8. Call batch_add_to_project once using project name "{topic}" and only successfully
    profiled papers as a list.
-8. Call get_workflow_status(project="{topic}") and verify profiled_count equals
+9. Call get_workflow_status(project="{topic}") and verify profiled_count equals
    paper_count before detecting gaps.
-9. Call detect_research_gaps(project="{topic}").
-10. Call start_batch_validate_gaps_job(project="{topic}", max_workers=2).
+10. Call detect_research_gaps(project="{topic}").
+11. Call start_batch_validate_gaps_job(project="{topic}", max_workers=2).
    Poll get_job_status(job_id, wait_seconds=180) until completed, then call get_job_result(job_id).
-11. Call suggest_research_experiments(project="{topic}", compact=True). This step
+12. Call suggest_research_experiments(project="{topic}", compact=True). This step
    is mandatory. It must use only included/refined validated gaps. If all gaps
    are already addressed, accept zero experiments and do not invent any.
-12. Call generate_bibliography(project_name="{topic}", format="bibtex", save=True).
-13. Call generate_project_report(project="{topic}") and include the returned report_path in the final answer.
-14. Call get_workflow_status(project="{topic}") once more and use its counts/artifact paths in the final answer.
+13. Call generate_bibliography(project_name="{topic}", format="bibtex", save=True).
+14. Call generate_project_report(project="{topic}").
+15. Call get_workflow_status(project="{topic}") once more and use its result only to verify completion.
 
-OUTPUT - after all required steps are complete, write your response in this exact
-format and nothing else:
-
-## Papers Analyzed
-For each paper: paper_id, title, type, one sentence on core contribution.
-
-## Research Gaps
-For each gap from detect_research_gaps output:
-- Gap name
-- One sentence description
-- Which paper IDs support it
-
-## Methodological Gaps
-Same format as Research Gaps.
-
-## Contradictions
-For each contradiction: what conflicts, which paper IDs, one sentence on why it matters.
-
-## Suggested Experiments
-For each experiment from suggest_research_experiments output:
-- Title
-- One sentence hypothesis
-- One sentence method
-- Feasibility rating
-- Which paper IDs it builds on
-
-## Field Summary
-The field_summary string from detect_research_gaps output verbatim.
-
-## Report
-The report_path returned by generate_project_report.
+OUTPUT - after all required steps are complete:
+Paste the report_markdown returned by generate_project_report into chat.
+Do not replace it with a summary. Do not create visual outputs, diagrams, SVGs,
+charts, indexes, or extra documents.
 
 RULES:
 - Use project "{topic}" consistently for every project-scoped tool call.
@@ -268,10 +243,9 @@ RULES:
 - If asked to validate a gap after this workflow, call validate_research_gap(gap=<gap text>, project="{topic}").
 - Do not add budget estimates, timelines, FTE counts, or resource requirements.
 - Do not add executive summaries, next steps, or collaboration sections.
-- Do not add any sections not listed in the OUTPUT format above.
+- Do not add any sections beyond the report_markdown.
 - Do not add commentary before or after the output.
-- Keep every field to one sentence maximum unless stated otherwise.
-- The tool outputs are the deliverable. Present them and stop."""
+- The deterministic report is the deliverable. Present it and stop."""
 
 
 def build_research_topic_prompt(topic: str, num_papers: int = DEFAULT_NUM_PAPERS) -> str:
@@ -370,12 +344,13 @@ def create_agent(verbose: bool = True) -> AgentExecutor:
             "Use paper_id and source exactly "
             "as returned by search_papers, never a URL or placeholder. Use only successfully ingested/profiled papers. "
             "Do not create separate Markdown, SVG, index, or planning files outside generate_project_report. "
+            "Do not create visual outputs, diagrams, charts, SVGs, or summary visualizations. "
             "Do not add budgets, team sizes, timelines, GPU estimates, or leadership-review language unless the user asks. "
             "Search results are not a valid final answer. Do not stop after search, ingestion, profiling, gap detection, or validation. "
             "You may only produce the final answer after generate_project_report and a final get_workflow_status call have completed. "
             "Do not stop after intermediate tool calls. After all workflow tools are complete, "
-            "you must always produce a final markdown answer that matches the exact structure "
-            "requested by the user. Do not output raw JSON or narrate tool execution.",
+            "you must paste the report_markdown returned by generate_project_report into chat. "
+            "Do not replace the report with a custom summary. Do not output raw JSON or narrate tool execution.",
         ),
         ("human", "{input}"),
         MessagesPlaceholder(variable_name="agent_scratchpad"),

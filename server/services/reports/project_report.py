@@ -405,12 +405,14 @@ def generate_project_report(
 
     _REPORT_DIR.mkdir(parents=True, exist_ok=True)
     report_path = _REPORT_DIR / f"{_safe_slug(project_name)}_{datetime.now().strftime('%Y%m%d_%H%M%S')}_report.md"
-    report_path.write_text("\n".join(lines), encoding="utf-8")
+    report_markdown = "\n".join(lines)
+    report_path.write_text(report_markdown, encoding="utf-8")
     logger.info("Project report saved: %s", report_path)
 
     return {
         "project": project_name,
         "report_path": str(report_path),
+        "report_markdown": report_markdown,
         "paper_count": len(papers),
         "gap_count": len(research_gaps) + len(methodological_gaps),
         "included_validated_gap_count": included_count,

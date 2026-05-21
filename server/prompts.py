@@ -13,71 +13,42 @@ suggest experiments, build a research project, or run the whole workflow for a t
 
 STEPS - execute every step in order, do not skip any:
 1. get_research_workflow_guide_tool(topic="{topic}", project="{project_name}", num_papers={num_papers})
-2. search_papers_tool(query="{topic}", limit={search_limit})
-3. Pick up to {num_papers} relevant arxiv or semantic_scholar papers. Only select
+2. Plan 2-4 academic search queries yourself. For niche terms, include the user
+   term plus broader scholarly terms that capture the same research area.
+3. Call search_papers_tool once for each planned query, using limit={search_limit}.
+4. Pick up to {num_papers} relevant arxiv or semantic_scholar papers across all results. Only select
    papers whose title or abstract directly mentions the research topic. Reject
    papers that are only loosely related by domain, generic surveys outside the
    topic, or papers whose source cannot be ingested.
-4. Call create_project_tool(name="{project_name}", overwrite=True) so this run
+5. Call create_project_tool(name="{project_name}", overwrite=True) so this run
    starts from a clean project manifest.
-5. Call batch_ingest_papers_tool once with all selected papers as a list. Use
+6. Call batch_ingest_papers_tool once with all selected papers as a list. Use
    the paper_id and source exactly as returned by search_papers_tool; never pass
    a URL as paper_id. If some papers fail ingestion, continue with successful papers.
-6. Call start_batch_build_profiles_job once with only successfully ingested papers
+7. Call start_batch_build_profiles_job once with only successfully ingested papers
    as a list and max_workers=2. Poll get_job_status_tool(job_id, wait_seconds=180)
    until status is completed, then call get_job_result_tool(job_id). Continue
    only with successfully profiled papers.
-7. Call batch_add_to_project_tool once using project name "{project_name}" and
+8. Call batch_add_to_project_tool once using project name "{project_name}" and
    only successfully profiled papers as a list.
-8. Call get_workflow_status_tool(project="{project_name}") and verify profiled_count
+9. Call get_workflow_status_tool(project="{project_name}") and verify profiled_count
    equals paper_count before detecting gaps.
-9. Call detect_gaps_tool(project="{project_name}").
-10. Call start_batch_validate_gaps_job(project="{project_name}", max_workers=2).
+10. Call detect_gaps_tool(project="{project_name}").
+11. Call start_batch_validate_gaps_job(project="{project_name}", max_workers=2).
    Poll get_job_status_tool(job_id, wait_seconds=180) until completed, then call
    get_job_result_tool(job_id).
-11. Call suggest_experiments_tool(project="{project_name}", compact=True). This
+12. Call suggest_experiments_tool(project="{project_name}", compact=True). This
    step is mandatory. It must use only included/refined validated gaps. If all
    gaps are already addressed, accept zero experiments and do not invent any.
-12. Call generate_bibliography_tool(project_name="{project_name}", format="bibtex").
-13. Call generate_project_report_tool(project="{project_name}").
-14. Call get_workflow_status_tool(project="{project_name}") once more and use its
-    counts/artifact paths when writing the final answer.
+13. Call generate_bibliography_tool(project_name="{project_name}", format="bibtex").
+14. Call generate_project_report_tool(project="{project_name}").
+15. Call get_workflow_status_tool(project="{project_name}") once more and use its
+    result only to verify completion.
 
-OUTPUT - after all required steps are complete, write your response in this exact
-format and nothing else:
-
-## Papers Analyzed
-For each paper: paper_id, title, type, one sentence on core contribution.
-
-## Research Gaps
-For each gap from detect_gaps_tool output:
-- Gap name
-- One sentence description
-- Which paper IDs support it
-
-## Methodological Gaps
-Same format as Research Gaps.
-
-## Contradictions
-For each contradiction: what conflicts, which paper IDs, one sentence on why it matters.
-
-## Suggested Experiments
-For each experiment from suggest_experiments_tool output:
-- Title
-- One sentence hypothesis
-- One sentence method
-- Feasibility rating
-- Which paper IDs it builds on
-
-## Field Summary
-The field_summary string from detect_gaps_tool output verbatim.
-
-## Artifacts
-- Gap analysis path:
-- Validation batch path:
-- Experiments path:
-- Bibliography path:
-- Report path:
+OUTPUT - after all required steps are complete:
+Paste the report_markdown returned by generate_project_report_tool into chat.
+Do not replace it with a summary. Do not create visual outputs, diagrams, SVGs,
+charts, indexes, or extra documents.
 
 RULES:
 - Use project "{project_name}" consistently for every project-scoped tool call.
@@ -87,10 +58,9 @@ RULES:
 - If asked to validate a gap after this workflow, call validate_gap_tool(gap=<gap text>, project="{project_name}").
 - Do not add budget estimates, timelines, FTE counts, or resource requirements.
 - Do not add executive summaries, next steps, or collaboration sections.
-- Do not add any sections not listed in the OUTPUT format above.
+- Do not add any sections beyond the report_markdown.
 - Do not add commentary before or after the output.
-- Keep every field to one sentence maximum unless stated otherwise.
-- The tool outputs are the deliverable. Present them and stop."""
+- The deterministic report is the deliverable. Present it and stop."""
 
     @mcp.prompt()
     def research_topic(topic: str, num_papers: int = 8) -> str:

@@ -38,7 +38,10 @@ def get_research_workflow_guide_tool(
             {
                 "step": 1,
                 "tool": "search_papers_tool",
-                "instruction": f"Search for the topic and select at most {requested} directly relevant papers.",
+                "instruction": (
+                    f"Plan 2-4 academic search queries yourself. For niche terms, include the user term plus broader scholarly terms. "
+                    f"Call search_papers_tool once per query, then select at most {requested} directly relevant papers across all results."
+                ),
             },
             {
                 "step": 2,
@@ -88,37 +91,28 @@ def get_research_workflow_guide_tool(
             {
                 "step": 11,
                 "tool": "generate_project_report_tool",
-                "instruction": "Generate the deterministic Markdown report.",
+                "instruction": "Generate the deterministic Markdown report and use report_markdown for the final chat answer.",
             },
             {
                 "step": 12,
                 "tool": "get_workflow_status_tool",
-                "instruction": "Use final status counts and artifact paths in the response.",
+                "instruction": "Use only to verify completion; do not replace the report_markdown final answer with a summary.",
             },
         ],
         "guardrails": [
             "Do not create separate Markdown/SVG/index files outside generate_project_report_tool.",
+            "Do not create visual outputs, diagrams, SVGs, charts, or summary visualizations.",
             "Do not add budget, team size, timelines, compute estimates, or implementation plans unless the user asks.",
             "Search results are not a valid final answer.",
             "Do not stop after gap detection or validation; continue through experiments, bibliography, and report.",
             "Only produce the final answer after generate_project_report_tool and the final get_workflow_status_tool call complete.",
+            "The final chat answer must be the report_markdown returned by generate_project_report_tool, not a new summary.",
             "Do not invent experiments if validation says all gaps are already addressed.",
-            "Keep the final answer short and based on tool outputs, not new analysis prose.",
+            "Do not write new analysis prose after the report.",
         ],
         "final_answer_contract": {
-            "max_paragraphs": 2,
-            "required_fields": [
-                "project",
-                "paper_count",
-                "gap_count",
-                "included_validated_gap_count",
-                "excluded_validated_gap_count",
-                "experiment_count",
-                "bibliography_path",
-                "report_path",
-                "warnings",
-            ],
-            "style": "compact status summary, no extra documents, no long generated report in chat",
+            "source": "generate_project_report_tool.report_markdown",
+            "style": "paste the deterministic Markdown report into chat exactly; no visuals, no extra summary, no extra files",
         },
     }
     log_invocation(

@@ -106,7 +106,8 @@ def research_workflow_guide_impl(
         "paper_selection_limit": requested,
         "normal_max_papers": WORKFLOW_MAX_PAPERS,
         "tool_order": [
-            "search_papers",
+            "plan 2-4 search queries",
+            "search_papers once per query",
             "create_project(overwrite=True)",
             "batch_ingest_papers",
             "start_batch_build_profiles_job",
@@ -121,25 +122,17 @@ def research_workflow_guide_impl(
         ],
         "guardrails": [
             "Do not create separate Markdown/SVG/index files outside generate_project_report.",
+            "Do not create visual outputs, diagrams, SVGs, charts, or summary visualizations.",
             "Do not add budgets, team sizes, timelines, or compute estimates unless asked.",
             "Search results are not a valid final answer.",
             "Only produce the final answer after generate_project_report and the final get_workflow_status call complete.",
+            "The final chat answer must be the report_markdown returned by generate_project_report, not a new summary.",
             "Use only included validated gaps for experiments.",
-            "Keep the final answer compact and based on tool outputs.",
+            "Do not write new analysis prose after the report.",
         ],
         "final_answer_contract": {
-            "required_fields": [
-                "project",
-                "paper_count",
-                "gap_count",
-                "included_validated_gap_count",
-                "excluded_validated_gap_count",
-                "experiment_count",
-                "bibliography_path",
-                "report_path",
-                "warnings",
-            ],
-            "style": "compact status summary",
+            "source": "generate_project_report.report_markdown",
+            "style": "paste the deterministic Markdown report into chat exactly; no visuals, no extra summary, no extra files",
         },
     }
     log_invocation(
@@ -740,6 +733,7 @@ def generate_project_report_impl(
             "paper_count": result.get("paper_count"),
             "gap_count": result.get("gap_count"),
             "experiment_count": result.get("experiment_count"),
+            "report_markdown_chars": len(result.get("report_markdown") or ""),
         })
         return result
     except Exception as e:

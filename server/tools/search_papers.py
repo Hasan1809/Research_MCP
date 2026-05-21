@@ -12,6 +12,10 @@ def search_papers_tool(query: str, limit: int) -> list[dict]:
     Returns papers with paper_id, title, abstract, year, authors, source.
     Use the paper_id and source from results to call batch_ingest_papers_tool.
     Papers with source='arxiv' or source='semantic_scholar' can be ingested.
+
+    For niche topics, the orchestrator should call this tool multiple times
+    with its own related academic search queries, then select papers across
+    the combined results.
     """
     logger.info("Tool invoked: query=%r limit=%d", query, limit)
     try:
