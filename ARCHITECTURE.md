@@ -1,607 +1,571 @@
-# Research MCP — Architecture
+# Research MCP Architecture
 
-> Last updated: 2026-04-17
-> Update this file whenever a tool is added/removed, a service is changed, a new external dependency is introduced, or the data flow changes.
-
----
-
-## Table of Contents
-
-1. [Overview](#overview)
-2. [Tech Stack](#tech-stack)
-3. [Directory Structure](#directory-structure)
-4. [System Diagram](#system-diagram)
-5. [MCP Tools](#mcp-tools)
-6. [Services](#services)
-7. [Data Flow Diagrams](#data-flow-diagrams)
-8. [Data Storage](#data-storage)
-9. [Logging System](#logging-system)
-10. [Environment Variables](#environment-variables)
-11. [Tool Dependency Map](#tool-dependency-map)
-12. [Changelog](#changelog)
-
----
+> Last updated: 2026-05-21
+>
+> Update this file when the MCP tool surface, LangChain baseline, artifact layout,
+> workflow contract, or orchestration rules change.
 
 ## Overview
 
-A **Model Context Protocol (MCP)** server that gives an AI assistant (Claude Desktop) a set of research tools: searching academic APIs, ingesting PDFs, indexing them into a vector database, extracting structured insights with an LLM, detecting cross-paper research gaps, suggesting concrete experiments, and organizing papers into named projects.
+This repository implements a research-agent system with two comparable
+orchestration surfaces:
 
-The server runs as a local process. Claude Desktop connects to it over stdio. Every tool is a Python function registered with **FastMCP**.
+- **MCP server**: exposed to Claude Desktop or any MCP-compatible host.
+- **LangChain baseline**: a tool-calling LangChain agent that uses the same
+  backend services.
 
----
+The system is intentionally **modular**. It does not hide the whole research
+workflow behind a single "run everything" tool. That is important for the
+research goal of this project: studying how an LLM orchestrator uses MCP tools
+to conduct research work. The backend provides reliable tools, state checks,
+job execution, validation, artifact storage, and deterministic reporting; the
+orchestrator remains responsible for planning, paper selection, and sequencing.
 
-## Tech Stack
+The expected user experience is still simple:
 
-| Layer | Technology | Version / Notes |
-|---|---|---|
-| MCP framework | `mcp` / FastMCP | `mcp.server.fastmcp.FastMCP` |
-| LLM inference | IONOS AI Model Hub | OpenAI-compatible `/chat/completions` endpoint |
-| LLM model | **Llama 3.3 70B Instruct** | Configured via `IONOS_MODEL` env var |
-| Vector database | **ChromaDB** (persistent) | HNSW index, cosine distance |
-| Embeddings | ChromaDB `DefaultEmbeddingFunction` | Local, no external call |
-| PDF parsing | **pypdf** | Page-by-page text extraction |
-| HTTP client | **httpx** | Sync, used for all external HTTP |
-| Paper sources | **arXiv API** (Atom/XML) | `export.arxiv.org/api/query` |
-| Paper sources | **Semantic Scholar API** | `api.semanticscholar.org/graph/v1` |
-| Config | **python-dotenv** | `.env` loaded before all imports in `main.py` |
-| Language | Python 3.11+ | Type hints throughout |
-
----
-
-## Directory Structure
-
+```text
+Find research gaps and suggest experiments for LLM agent tool-use security.
 ```
+
+The orchestrator should then use the workflow guide, search papers, create a
+clean project, ingest/profile papers, detect gaps, validate them, suggest
+experiments, generate a bibliography, generate the final report, and paste the
+report Markdown in chat.
+
+## Design Principles
+
+1. **Modular tools, not a hidden pipeline**
+   - Each stage is inspectable and logged.
+   - The orchestrator decides how to plan the workflow.
+   - The backend enforces guardrails where correctness matters.
+
+2. **MCP and baseline parity**
+   - The LangChain baseline exposes the same workflow shape as the MCP server.
+   - Both surfaces reuse the same backend services wherever possible.
+   - Differences should be orchestration-layer differences, not feature drift.
+
+3. **Orchestrator-owned query planning**
+   - The search tool executes one literal query at a time.
+   - The orchestrator should generate 2-4 academic search queries for niche
+     topics and call search once per query.
+   - The backend does not hardcode topic-specific query expansion.
+
+4. **Deterministic final output**
+   - Final user-facing output should be the generated project report Markdown.
+   - The agent should not create visual summaries, SVGs, extra indexes, or
+     custom long summaries unless explicitly asked.
+
+5. **Defensible research quality**
+   - Gap validation is stricter than simple keyword matching.
+   - Already-addressed gaps are excluded from experiments.
+   - Experiments must be grounded in surviving validated gaps and project
+     papers where possible.
+
+6. **Reproducibility**
+   - Every meaningful tool call is logged.
+   - Intermediate artifacts are saved under `data/`.
+   - Job results are persisted and resumable.
+
+## High-Level Components
+
+```text
 research_mcp/
-├── server/
-│   ├── main.py                        # Entry point — registers all 13 tools
-│   ├── tools/                         # MCP tool functions (thin wrappers)
-│   │   ├── search_papers.py
-│   │   ├── analyze_papers.py
-│   │   ├── ingest_paper.py
-│   │   ├── extract_paper_insights.py
-│   │   ├── index_paper.py
-│   │   ├── retrieve_chunks.py
-│   │   ├── synthesize_papers.py
-│   │   ├── build_paper_profile.py
-│   │   ├── detect_gaps.py
-│   │   ├── manage_project.py          # create/add/list project tools
-│   │   └── suggest_experiments.py
-│   ├── services/
-│   │   ├── retrieval/
-│   │   │   ├── aggregator.py          # Merges arXiv + S2 results
-│   │   │   ├── arxiv_service.py       # arXiv API client (with retry)
-│   │   │   ├── semantic_scholar_service.py  # S2 API client (with retry)
-│   │   │   └── vector_store.py        # ChromaDB read/write
-│   │   ├── documents/
-│   │   │   ├── pdf_service.py         # PDF download, section detection, cache
-│   │   │   └── chunking.py            # Flat + section-aware chunking
-│   │   ├── extraction/
-│   │   │   └── llm_extractor.py       # All LLM prompts and calls
-│   │   └── analysis/
-│   │       ├── synthesis.py           # LLM analysis + statistical synthesis
-│   │       ├── gap_detector.py        # LLM-powered gap detection
-│   │       └── experiment_suggester.py  # LLM-powered experiment proposals
-│   ├── services/
-│   │   └── project_manager.py         # Project manifest CRUD
-│   └── utils/
-│       └── logger.py                  # Session logging + tool invocation logs
-├── data/
-│   ├── papers/                        # Cached ingested papers (JSON)
-│   │   └── arxiv/<paper_id>.json
-│   ├── insights/                      # Extracted insights (JSON)
-│   │   └── arxiv/<paper_id>.json
-│   ├── profiles/                      # Rich paper profiles (JSON)
-│   │   └── arxiv/<paper_id>.json
-│   ├── projects/                      # Project manifests (JSON)
-│   │   └── <project-name>.json
-│   ├── analysis/                      # Analysis outputs (JSON)
-│   │   ├── gap_analysis_<timestamp>_<ids>.json
-│   │   └── experiments_<timestamp>_<ids>.json
-│   └── chroma/                        # ChromaDB persistent storage
-│       ├── arxiv_papers/              # Content chunks (cosine)
-│       ├── arxiv_papers_refs/         # Reference/bibliography chunks (L2)
-│       └── arxiv_papers_sections/     # Section-aware chunks (cosine)
-├── logs/
-│   └── session_YYYYMMDD_HHMMSS/
-│       ├── main.log                   # Full DEBUG-level session log
-│       └── tools/
-│           └── NNN_toolname.json      # Per-invocation record
-└── tests/
-    └── test_section_detection.py
++-- server/
+|   +-- main.py                       # MCP entrypoint and tool registration
+|   +-- config.py                     # Shared limits and paths
+|   +-- tools/                        # Thin MCP wrappers
+|   +-- services/                     # Shared backend implementation
+|   |   +-- analysis/                 # Gaps, validation, experiments
+|   |   +-- artifacts/                # Bibliography generation
+|   |   +-- documents/                # PDF download, parsing, chunking
+|   |   +-- extraction/               # LLM profile extraction
+|   |   +-- jobs/                     # Background job manager
+|   |   +-- reports/                  # Deterministic project report
+|   |   +-- retrieval/                # arXiv/S2 search and metadata
+|   |   +-- project_manager.py        # Project manifests
+|   |   +-- workflow_status.py        # Workflow readiness/resume checks
+|   +-- utils/                        # Logging and usage tracking
++-- langchain_baseline/
+|   +-- main.py                       # LangChain agent entrypoint
+|   +-- tools/                        # LangChain tool wrappers
+|   +-- services/__init__.py          # Reuses server-side implementations
+|   +-- utils/                        # Baseline logging
++-- data/                             # Persistent research artifacts
++-- logs/                             # Per-session logs and tool calls
++-- tests/                            # Regression tests
 ```
 
----
+## Runtime Surfaces
 
-## System Diagram
+### MCP Server
 
-```
-┌──────────────────────────────────────────────────────────────────┐
-│                        Claude Desktop                             │
-│                  (MCP client, calls tools by name)               │
-└─────────────────────────────┬────────────────────────────────────┘
-                              │ stdio (MCP protocol)
-                              ▼
-┌──────────────────────────────────────────────────────────────────┐
-│                    research-agent MCP Server                      │
-│                        (server/main.py)                           │
-│                                                                   │
-│  ┌────────────────────────────────────────────────────────────┐  │
-│  │                        Tools Layer (13 tools)               │  │
-│  │  search  analyze  ingest  extract  index  retrieve          │  │
-│  │  synthesize  build_profile  detect_gaps                     │  │
-│  │  create_project  add_to_project  list_projects              │  │
-│  │  suggest_experiments                                         │  │
-│  └──────────────────────────┬─────────────────────────────────┘  │
-│                             │                                     │
-│  ┌──────────────────────────▼─────────────────────────────────┐  │
-│  │                      Services Layer                          │  │
-│  │                                                              │  │
-│  │  retrieval/         documents/         extraction/           │  │
-│  │  ├ aggregator       ├ pdf_service      └ llm_extractor       │  │
-│  │  ├ arxiv_service    └ chunking                               │  │
-│  │  ├ semantic_scholar                   analysis/              │  │
-│  │  └ vector_store                       ├ synthesis            │  │
-│  │                                       ├ gap_detector         │  │
-│  │  project_manager.py                   └ experiment_suggester │  │
-│  └──────────────────────────────────────────────────────────────┘  │
-└──────────────────────────────────────────────────────────────────┘
-        │                │                    │
-        ▼                ▼                    ▼
-  ┌──────────┐   ┌──────────────┐   ┌────────────────────┐
-  │ External │   │  Local Disk  │   │    IONOS AI Hub     │
-  │   APIs   │   │   (data/)    │   │  Llama 3.3 70B      │
-  │ arXiv    │   │ ChromaDB     │   │  /chat/completions  │
-  │ S2       │   │ JSON cache   │   └────────────────────┘
-  └──────────┘   └──────────────┘
-  (retry/backoff)
-```
+`server/main.py` registers the current public MCP tool surface. The tools are
+ordered to bias the orchestrator toward the correct workflow.
 
----
+| Order | MCP tool | Purpose |
+|---:|---|---|
+| 1 | `get_research_workflow_guide_tool` | Returns the workflow contract and output rules. |
+| 2 | `search_papers_tool` | Runs one literal academic search query. |
+| 3 | `create_project_tool` | Creates or overwrites a clean project manifest. |
+| 4 | `batch_ingest_papers_tool` | Downloads/parses selected papers in batch. |
+| 5 | `start_batch_build_profiles_job` | Starts background profile extraction. |
+| 6 | `get_job_status_tool` | Polls job completion. |
+| 7 | `get_job_result_tool` | Fetches persisted job output. |
+| 8 | `batch_add_to_project_tool` | Adds only successfully profiled papers to the project. |
+| 9 | `get_workflow_status_tool` | Checks project readiness and latest artifacts. |
+| 10 | `detect_gaps_tool` | Detects cross-paper candidate gaps. |
+| 11 | `start_batch_validate_gaps_job` | Validates detected gaps against external literature. |
+| 12 | `suggest_experiments_tool` | Suggests experiments from included validated gaps. |
+| 13 | `generate_bibliography_tool` | Generates BibTeX from project metadata. |
+| 14 | `generate_project_report_tool` | Generates and returns deterministic Markdown report. |
+| 15 | `usage_summary_tool` | Returns token/cost/tool usage summary. |
+| 16 | `cancel_job_tool` | Cancels background jobs when needed. |
+| 17 | `clear_project_tool` | Clears project membership for recovery/testing. |
+| 18 | `validate_gap_tool` | Validates a single gap for debugging or manual review. |
 
-## MCP Tools
+### LangChain Baseline
 
-Each tool is a Python function registered via `mcp.tool()(fn)` in `main.py`. Tools are thin wrappers — they validate inputs, call services, handle logging, and return results to the MCP client.
+The LangChain baseline exposes the same workflow with LangChain tool names:
 
-### `search_papers_tool`
-**File:** `tools/search_papers.py`
-**Input:** `query: str, limit: int`
-**Output:** `list[dict]` — each item has `paper_id, title, abstract, year, authors, source`
-**What it does:** Queries arXiv and Semantic Scholar (concatenated), returns combined results. `paper_id` is the arXiv ID (e.g. `2401.04088`) — used to chain into `ingest_paper_tool`. Both APIs use retry with exponential backoff on 429/errors.
+| MCP tool | LangChain baseline tool |
+|---|---|
+| `get_research_workflow_guide_tool` | `get_research_workflow_guide` |
+| `search_papers_tool` | `search_papers` |
+| `create_project_tool` | `create_project` |
+| `batch_ingest_papers_tool` | `batch_ingest_papers` |
+| `start_batch_build_profiles_job` | `start_batch_build_profiles_job` |
+| `get_job_status_tool` | `get_job_status` |
+| `get_job_result_tool` | `get_job_result` |
+| `batch_add_to_project_tool` | `batch_add_to_project` |
+| `get_workflow_status_tool` | `get_workflow_status` |
+| `detect_gaps_tool` | `detect_research_gaps` |
+| `start_batch_validate_gaps_job` | `start_batch_validate_gaps_job` |
+| `suggest_experiments_tool` | `suggest_research_experiments` |
+| `generate_bibliography_tool` | `generate_bibliography` |
+| `generate_project_report_tool` | `generate_project_report` |
+| `usage_summary_tool` | `usage_summary` |
+| `cancel_job_tool` | `cancel_job` |
+| `clear_project_tool` | `clear_project` |
+| `validate_gap_tool` | `validate_research_gap` |
 
-### `analyze_papers_tool`
-**File:** `tools/analyze_papers.py`
-**Input:** `papers: list[dict]` — raw search results
-**Output:** `dict` with LLM-identified `themes[], trends[], methodology_landscape, paper_count, year_range`; falls back to word-frequency `themes[], common_topics[], limitations[], possible_gaps[]` if LLM unavailable
-**What it does:** LLM-powered analysis of titles and abstracts. Themes reference specific paper titles. Falls back to `_analyze_papers_fallback()` (word counting) if IONOS is unreachable or returns bad JSON.
+The baseline is for comparison against MCP orchestration. It should not add
+capabilities that the MCP surface lacks, except for baseline-specific logging
+and agent execution support.
 
-### `ingest_paper_tool`
-**File:** `tools/ingest_paper.py`
-**Input:** `paper_id: str, source: str` (only `"arxiv"` supported)
-**Output:** `dict` with `paper_id, source, pdf_url, text_length, chunk_count, sections, section_chunks, metadata`
-**What it does:**
-1. Checks disk cache (`data/papers/arxiv/<id>.json`) — returns immediately if found
-2. Downloads PDF from `https://arxiv.org/pdf/<paper_id>`
-3. Extracts text page-by-page with pypdf
-4. Detects section boundaries using heuristics (`_is_heading`)
-5. Produces flat chunks (`chunk_text`) and section-aware chunks (`chunk_sections`)
-6. Saves full result to disk cache
+## Canonical Workflow
 
-### `index_paper_tool`
-**File:** `tools/index_paper.py`
-**Input:** `paper_id: str, source: str`
-**Output:** `dict` with chunk counts
-**What it does:** Loads from disk cache, then:
-- Upserts **flat chunks** into `arxiv_papers` ChromaDB collection (content) and `arxiv_papers_refs` (references, separated by regex)
-- Upserts **section-aware chunks** into `arxiv_papers_sections` collection with rich metadata (`section`, `is_abstract`, `is_conclusion`, `position_ratio`)
-- Must run after `ingest_paper_tool`
+For a simple user request like:
 
-### `retrieve_chunks_tool`
-**File:** `tools/retrieve_chunks.py`
-**Input:** `query: str, paper_id: str, source: str, k: int`
-**Output:** `list[dict]` — each item has `chunk_index, text, distance`
-**What it does:** Semantic similarity search over the flat content collection for a specific paper. Distance is cosine distance (0 = identical, 2 = opposite). Must run after `index_paper_tool`.
-
-### `extract_paper_insights_tool`
-**File:** `tools/extract_paper_insights.py`
-**Input:** `paper_id: str, source: str`
-**Output:** `dict` with `methods, results, datasets, limitations, future_work, debug_notes`
-**What it does:** Two-tier LLM extraction:
-- **Primary (≤80k chars):** sends full section-reconstructed text to LLM in a single pass
-- **Fallback (>80k chars):** per-field chunk retrieval + separate LLM call per field
-- Saves to `data/insights/arxiv/<id>.json`
-- Must run after `ingest_paper_tool` (fallback also requires `index_paper_tool`)
-
-### `build_paper_profile_tool`
-**File:** `tools/build_paper_profile.py`
-**Input:** `paper_id: str, source: str`
-**Output:** `dict` — 13-field rich profile
-**What it does:** Three-tier context selection, then a single LLM call:
-1. **Full text (≤80k chars):** send everything
-2. **Priority sections (>80k):** extract sections matching `abstract, introduction, conclusion, discussion, method, approach, related work` and join them — if that fits under 80k, use it
-3. **Chunk retrieval (last resort):** 3 retrieval queries → top 15 deduplicated chunks
-- Saves to `data/profiles/arxiv/<id>.json`
-
-**Profile schema:**
-```
-paper_type, research_problem, main_contribution, methods_or_approach,
-key_findings, paper_intent, core_insight, paper_stance,
-distinctive_elements[], datasets[], limitations[], future_work[],
-plain_english_summary
+```text
+Find research gaps and suggest experiments for <topic>.
 ```
 
-### `synthesize_papers_tool`
-**File:** `tools/synthesize_papers.py`
-**Input:** `papers: list[dict]` OR `project: str` (project takes precedence if both given)
-**Output:** `dict` with `common_methods, common_datasets, recurring_limitations, common_findings, notable_differences`
-**What it does:** Statistical cross-paper synthesis. Prefers profiles over insights when both exist. Finds items appearing in ≥ half the papers (min 2). No LLM.
+the orchestrator should follow this sequence:
 
-### `detect_gaps_tool`
-**File:** `tools/detect_gaps.py`
-**Input:** `papers: list[dict]` OR `project: str` (project takes precedence if both given); minimum 2 papers
-**Output:** `dict` with `research_gaps, methodological_gaps, contradictions, connections, field_summary`
-**What it does:** Loads profiles (or insights as fallback) for all papers, formats them, sends to LLM for gap analysis. Each gap/contradiction/connection references specific `paper_id`s. Saves to `data/analysis/gap_analysis_*.json`.
-- LLM is instructed **not** to restate authors' own `future_work`/`limitations` — only gaps visible from cross-paper comparison.
-- Must run `build_paper_profile_tool` (or `extract_paper_insights_tool`) on each paper first.
+1. **Load the workflow guide**
+   - Call `get_research_workflow_guide_tool`.
+   - Follow its workflow and final-output contract.
 
-### `suggest_experiments_tool`
-**File:** `tools/suggest_experiments.py`
-**Input:** `papers: list[dict]` OR `project: str` (project takes precedence if both given); minimum 2 papers
-**Output:** `dict` with `gaps` (full gap analysis) and `experiments[]`
-**What it does:** Runs gap detection internally, then sends the gap analysis + all profiles to the LLM to propose concrete experiments. Each experiment has: `title, addresses_gap, hypothesis, method, baselines[], datasets[], expected_outcome, feasibility (high/medium/low), builds_on[]`. Saves to `data/analysis/experiments_*.json`.
-- Must run `build_paper_profile_tool` on each paper first.
+2. **Plan search queries**
+   - Infer the research topic from the user prompt.
+   - Generate 2-4 academic search queries.
+   - For niche terms, include adjacent academic language.
+   - Do not ask the user to know internal tool details.
 
-### `create_project_tool`
-**File:** `tools/manage_project.py`
-**Input:** `name: str`
-**Output:** Project manifest `dict` with `name, created, papers[]`
-**What it does:** Creates a new named project manifest at `data/projects/<name>.json`. Name is slugified (lowercase, hyphens). No-op if project already exists (returns existing manifest).
+3. **Search**
+   - Call `search_papers_tool(query, limit)` once per planned query.
+   - Merge and deduplicate results mentally or in the orchestrator context.
+   - Select a focused paper set, normally around 6-8 papers.
 
-### `add_to_project_tool`
-**File:** `tools/manage_project.py`
-**Input:** `name: str, paper_id: str, source: str`
-**Output:** Updated project manifest
-**What it does:** Adds a paper reference to an existing project manifest. No-op if the paper is already in the project.
+4. **Create a clean project**
+   - Call `create_project_tool(name, overwrite=true)` for reproducibility.
+   - The project name should be a concise slug/topic name.
 
-### `list_projects_tool`
-**File:** `tools/manage_project.py`
-**Input:** (none)
-**Output:** `list[dict]` — each item has `name, created, paper_count, papers[]`
-**What it does:** Lists all project manifests in `data/projects/`.
+5. **Ingest papers**
+   - Call `batch_ingest_papers_tool`.
+   - Use the default paper cap unless the user explicitly asks for more.
 
----
+6. **Build profiles**
+   - Start `start_batch_build_profiles_job`.
+   - Poll with `get_job_status_tool` using meaningful waits.
+   - Fetch final output with `get_job_result_tool` when needed.
 
-## Services
+7. **Add profiled papers to the project**
+   - Call `batch_add_to_project_tool`.
+   - The visible add tool requires successful profiles.
+   - Failed/unprofiled papers should be skipped, not forced into the project.
 
-### `services/retrieval/aggregator.py`
-Calls both `arxiv_service.fetch_papers()` and `semantic_scholar_service.fetch_papers()` and concatenates the results. No deduplication.
+8. **Check status**
+   - Call `get_workflow_status_tool`.
+   - Use it to confirm the project is ready for gap detection or to resume
+     after failures.
 
-### `services/retrieval/arxiv_service.py`
-- Calls `https://export.arxiv.org/api/query` with httpx
-- Parses Atom XML with `xml.etree.ElementTree`
-- Extracts `paper_id` from atom:id: `http://arxiv.org/abs/2401.04088v1` → `2401.04088`
-- **Retry logic:** up to 4 attempts, exponential backoff (5s, 10s, 20s) on 429 or any `HTTPError`
-- Returns: `paper_id, title, abstract, year, authors, source="arxiv"`
+9. **Detect gaps**
+   - Call `detect_gaps_tool(project=...)`.
+   - This saves a cached gap analysis artifact.
 
-### `services/retrieval/semantic_scholar_service.py`
-- Calls `https://api.semanticscholar.org/graph/v1/paper/search`
-- Fields requested: `title,abstract,year,authors,externalIds`
-- `paper_id` prefers `externalIds.ArXiv` (for ingest compatibility), falls back to S2 `paperId`
-- Optional `S2_API_KEY` via `x-api-key` header
-- **Retry logic:** same 4-attempt exponential backoff as arXiv service
-- Returns: `paper_id, title, abstract, year, authors, source="semantic_scholar"`
+10. **Validate gaps**
+   - Start `start_batch_validate_gaps_job(project=...)`.
+   - This requires a cached gap analysis from step 9.
+   - Poll until complete.
 
-### `services/retrieval/vector_store.py`
-ChromaDB operations. Three collections per source:
+11. **Suggest experiments**
+   - Call `suggest_experiments_tool(project=...)`.
+   - It should use validation results when present.
+   - Already-addressed gaps must not generate experiments.
 
-| Collection | Distance | Contents |
-|---|---|---|
-| `{source}_papers` | **cosine** | Content chunks (all non-reference text) |
-| `{source}_papers_refs` | L2 | Bibliography / reference list chunks |
-| `{source}_papers_sections` | **cosine** | Section-aware chunks with rich metadata |
+12. **Generate bibliography**
+   - Call `generate_bibliography_tool(project=...)`.
+   - The report tool can also auto-generate it if missing.
 
-**Key functions:**
-- `index_chunks(paper_id, source, chunks)` — classifies content vs references by regex, upserts both
-- `index_structured_chunks(paper_id, source, chunks)` — indexes section chunks with `section, is_abstract, is_conclusion, position_ratio` metadata
-- `query_chunks(query, paper_id, source, k)` — cosine similarity search filtered by `paper_id`
-- `get_section_chunks(paper_id, source, section_name)` — retrieves all chunks from a named section
-- Collection metadata conflict on distance metric change → auto-delete and recreate
+13. **Generate final report**
+   - Call `generate_project_report_tool(project=...)`.
+   - The tool saves the report and returns `report_markdown`.
 
-### `services/documents/pdf_service.py`
-- `download_and_extract_text(url)` — flat text extraction (backward compat)
-- `extract_structured_text(url)` — downloads + calls detect
-- `detect_sections_from_text(text, pages_text?)` — heuristic section detection
-  - Heading detection: numbered patterns (`1.2 Methods`), keyword match (`abstract`, `introduction`, …), ALL CAPS
-  - Fallback: wraps entire text as single `Full Text` section
-  - Returns: `{full_text, sections[], metadata{title, abstract, page_count, char_count}}`
-- `load_cached(source, paper_id)` / `save_cached(source, paper_id, data)` — JSON file cache at `data/papers/`
+14. **Final response**
+   - Paste the report Markdown in chat.
+   - Do not create visual summaries, separate custom documents, or long
+     alternative summaries unless the user asks.
 
-### `services/documents/chunking.py`
-Two chunking strategies:
+## Data Flow
 
-**`chunk_text(text) → list[str]`** (flat)
-- Paragraph-aware (split on `\n\n`)
-- `MAX_CHUNK_CHARS=1200`, `MIN_CHUNK_CHARS=100`, `OVERLAP_CHARS=80`
-- Overlapping tail from previous chunk on split
-
-**`chunk_sections(sections) → list[dict]`** (section-aware)
-- Never splits across section boundaries
-- Each chunk carries: `text, section, section_index, chunk_in_section, is_abstract, is_conclusion, position_ratio`
-- `position_ratio`: float 0–1 for where the chunk sits in the full document
-
-### `services/extraction/llm_extractor.py`
-All LLM interaction. Three exported functions:
-
-**`extract_insights(text) → (dict, raw_str)`**
-- Single-pass extraction of: `methods, results, datasets, limitations, future_work, debug_notes`
-- Strict no-fabrication rules in system prompt
-
-**`extract_field(field, text) → (list, raw_str)`**
-- Per-field extraction with field-specific system prompts
-- `methods` and `results` have custom prompts; others use generic template
-- Returns empty list on JSON parse failure (fault-tolerant)
-
-**`build_profile(text) → (dict, raw_str)`**
-- 13-field rich profile; `response_format: {"type": "json_object"}` enforced
-- Timeout: 90s
-
-**`_strip_code_fences(text)`** — strips ` ```json ` / ` ``` ` markdown wrapping before `json.loads()`. Imported and reused by `synthesis.py`, `gap_detector.py`, and `experiment_suggester.py`.
-
-All functions read `IONOS_API_TOKEN`, `IONOS_BASE_URL`, `IONOS_MODEL` from environment.
-
-### `services/analysis/synthesis.py`
-**`analyze_papers(papers) → dict`** — LLM-powered analysis; sends titles + abstracts to the LLM and returns structured `themes[], trends[], methodology_landscape, paper_count, year_range`. Falls back to `_analyze_papers_fallback()` (word frequency) on any failure.
-
-**`_analyze_papers_fallback(papers) → dict`** — original word-counting implementation; returns `themes[], common_topics[], limitations[], possible_gaps[]`.
-
-**`synthesize_insights(insights) → dict`** — statistical cross-paper synthesis; finds items appearing in ≥ half the papers. Unchanged.
-
-### `services/analysis/gap_detector.py`
-**`detect_gaps(paper_profiles) → (dict, raw_str)`**
-- Formats each profile with `_format_profile()` into a compact text block
-- Single LLM call with 90s timeout, `response_format: json_object`
-- System prompt rules include: only cross-paper gaps (not restatements of authors' own `future_work`/`limitations`), every item must reference specific `paper_id`s
-- Returns: `research_gaps[], methodological_gaps[], contradictions[], connections[], field_summary`
-
-### `services/analysis/experiment_suggester.py`
-**`suggest_experiments(gap_analysis, paper_profiles) → (dict, raw_str)`**
-- Takes the output of `detect_gaps()` plus the profiles it was run on
-- Single LLM call with 90s timeout, `response_format: json_object`
-- Each experiment proposal has: `title, addresses_gap, hypothesis, method, baselines[], datasets[], expected_outcome, feasibility, builds_on[]`
-- Feasibility rated `high` (weeks) / `medium` (months) / `low` (significant resources)
-
-### `services/project_manager.py`
-Manifest CRUD for named research projects.
-- `create_project(name)` — slugifies name, creates `data/projects/<name>.json`; returns existing manifest if already present
-- `add_paper_to_project(name, paper_id, source)` — appends to `papers[]` with timestamp; no-op if duplicate
-- `remove_paper_from_project(name, paper_id, source)` — removes matching entry
-- `get_project(name)` — loads and returns manifest; raises `FileNotFoundError` if missing
-- `list_projects()` — scans `data/projects/`, returns list with name, created, paper_count, papers
-- `get_project_papers(name)` — convenience wrapper returning just the papers list
-
----
-
-## Data Flow Diagrams
-
-### Project-based pipeline (recommended)
-
-```
-create_project_tool("moe-efficiency")
-       │ creates data/projects/moe-efficiency.json
-       ▼
-search_papers_tool(query, limit)
-       │ arXiv (retry/backoff) + S2 (retry/backoff)
-       │ returns [{paper_id, title, abstract, year, authors, source}, ...]
-       ▼
-for each relevant paper:
-  ingest_paper_tool(paper_id, source="arxiv")
-       │ cache check → download PDF → pypdf → section detection → chunking
-       │ saves data/papers/arxiv/<id>.json
-       ▼
-  index_paper_tool(paper_id, source)
-       │ flat chunks → arxiv_papers (cosine) + arxiv_papers_refs
-       │ section chunks → arxiv_papers_sections (cosine)
-       ▼
-  build_paper_profile_tool(paper_id, source)
-       │ three-tier context: full text → priority sections → chunk retrieval
-       │ single LLM call → 13-field profile
-       │ saves data/profiles/arxiv/<id>.json
-       ▼
-  add_to_project_tool("moe-efficiency", paper_id, source)
-       │ appends to manifest
-
-detect_gaps_tool(project="moe-efficiency")
-       │ loads all profiles from manifest
-       │ single LLM call → gaps JSON
-       │ saves data/analysis/gap_analysis_*.json
-       ▼
-suggest_experiments_tool(project="moe-efficiency")
-       │ re-runs gap detection + sends gaps + profiles to LLM
-       │ saves data/analysis/experiments_*.json
-       ▼
-       Returns experiment proposals to Claude Desktop
+```text
+User prompt
+  |
+Workflow guide
+  |
+Orchestrator plans 2-4 search queries
+  |
+search_papers_tool / search_papers
+  |
+Selected paper metadata
+  |
+create_project(overwrite=true)
+  |
+batch_ingest_papers
+  |
+data/papers/
+  |
+start_batch_build_profiles_job
+  |
+data/profiles/
+  |
+batch_add_to_project
+  |
+data/projects/<project>.json
+  |
+detect_gaps
+  |
+data/analysis/gap_analysis_*.json
+  |
+start_batch_validate_gaps_job
+  |
+data/analysis/gap_validations/
+  |
+suggest_experiments
+  |
+data/analysis/experiments_*.json
+  |
+generate_bibliography
+  |
+data/artifacts/bibliographies/
+  |
+generate_project_report
+  |
+data/artifacts/reports/
+  |
+report_markdown pasted in chat
 ```
 
-### build_paper_profile context selection
+## Artifact Layout
 
-```
-cached paper data
-       │
-       ├── full_text ≤ 80,000 chars
-       │       └──→ send full text to LLM  ✓
-       │
-       ├── full_text > 80,000 chars
-       │       └── filter sections by keyword:
-       │           {abstract, introduction, conclusion, discussion,
-       │            method, methods, approach, related work}
-       │           join in document order
-       │           └── joined text ≤ 80,000 chars
-       │                   └──→ send priority sections to LLM  ✓
-       │           └── joined text > 80,000 chars (or no matches)
-       │                   └──→ 3 retrieval queries × k=6 chunks
-       │                       deduplicate, sort by index (max 15)
-       │                       └──→ send top chunks to LLM  ✓
-       ▼
-build_profile(context_text)  →  13-field profile dict
-```
+All persistent research state is stored under `data/`.
 
-### analyze_papers LLM + fallback
+| Path | Purpose |
+|---|---|
+| `data/metadata/` | Search and citation metadata caches when available. |
+| `data/papers/{source}/{id}.json` | Ingested paper text, sections, chunks, and metadata. |
+| `data/profiles/{source}/{id}.json` | LLM-generated structured paper profiles. |
+| `data/projects/{project}.json` | Project manifest and paper membership. |
+| `data/analysis/gap_analysis_*.json` | MCP gap detection artifacts. |
+| `data/analysis/lc_gap_analysis_*.json` | LangChain baseline gap detection artifacts. |
+| `data/analysis/gap_validations/` | Single-gap validation artifacts. |
+| `data/analysis/gap_validations/batches/` | Batch validation artifacts. |
+| `data/analysis/experiments_*.json` | Experiment suggestion artifacts. |
+| `data/artifacts/bibliographies/` | BibTeX outputs. |
+| `data/artifacts/reports/` | Deterministic Markdown project reports. |
+| `data/jobs/` | Background job state and result files. |
+| `data/chroma/` | Persistent Chroma vector indexes used by legacy/deeper retrieval paths. |
 
-```
-analyze_papers_tool(papers)
-       │
-       ▼
-synthesis.analyze_papers(papers)
-       │
-       ├── IONOS env vars present?
-       │   ├── No  →  _analyze_papers_fallback()  (word frequency)
-       │   └── Yes →  LLM call (60s timeout)
-       │               ├── Success + valid JSON
-       │               │       └──→ return {themes, trends,
-       │               │                    methodology_landscape,
-       │               │                    paper_count, year_range}
-       │               └── Any failure (HTTP error, bad JSON, timeout)
-       │                       └──→ _analyze_papers_fallback()
-       │                            return {themes, common_topics,
-       │                                    limitations, possible_gaps}
-```
+## Logging Layout
 
-### API retry behaviour (arXiv and S2)
+Each MCP server run writes logs to:
 
-```
-fetch_papers(query, limit)
-       │
-       ├── attempt 1 ──→ 429 or HTTPError ──→ wait 5s  ──→ attempt 2
-       ├── attempt 2 ──→ 429 or HTTPError ──→ wait 10s ──→ attempt 3
-       ├── attempt 3 ──→ 429 or HTTPError ──→ wait 20s ──→ attempt 4
-       ├── attempt 4 ──→ 429 or HTTPError ──→ raise
-       └── any attempt ──→ 2xx ──→ parse + return immediately
-```
-
----
-
-## Data Storage
-
-All data lives under `data/` relative to the repo root.
-
-| Path | Format | Written by | Read by |
-|---|---|---|---|
-| `data/papers/{source}/{id}.json` | JSON | `ingest_paper_tool` | `index_paper_tool`, `extract_paper_insights_tool`, `build_paper_profile_tool` |
-| `data/insights/{source}/{id}.json` | JSON | `extract_paper_insights_tool` | `synthesize_papers_tool`, `detect_gaps_tool` |
-| `data/profiles/{source}/{id}.json` | JSON | `build_paper_profile_tool` | `synthesize_papers_tool`, `detect_gaps_tool`, `suggest_experiments_tool` |
-| `data/projects/{name}.json` | JSON | `create_project_tool`, `add_to_project_tool` | `synthesize_papers_tool`, `detect_gaps_tool`, `suggest_experiments_tool` |
-| `data/analysis/gap_analysis_*.json` | JSON | `detect_gaps_tool` | (audit / external) |
-| `data/analysis/experiments_*.json` | JSON | `suggest_experiments_tool` | (audit / external) |
-| `data/chroma/` | ChromaDB | `index_paper_tool` | `retrieve_chunks_tool`, `extract_paper_insights_tool`, `build_paper_profile_tool` |
-
-**Paper cache schema** (`data/papers/arxiv/<id>.json`):
-```json
-{
-  "paper_id": "2401.04088",
-  "source": "arxiv",
-  "pdf_url": "https://arxiv.org/pdf/2401.04088",
-  "text_length": 95000,
-  "full_text": "...",
-  "chunk_count": 82,
-  "chunks": ["...", "..."],
-  "sections": [{"heading": "Introduction", "level": 1, "text": "...", "start_page": 1, "end_page": 2}],
-  "section_chunks": [{"text": "...", "section": "Introduction", "section_index": 1, "chunk_in_section": 0, "is_abstract": false, "is_conclusion": false, "position_ratio": 0.0833}],
-  "metadata": {"title": "...", "abstract": "...", "page_count": 12, "char_count": 95000}
-}
-```
-
-**Project manifest schema** (`data/projects/<name>.json`):
-```json
-{
-  "name": "moe-efficiency",
-  "created": "2026-04-17T12:00:00",
-  "papers": [
-    {"paper_id": "2401.04088", "source": "arxiv", "added": "2026-04-17T12:01:00"}
-  ]
-}
-```
-
----
-
-## Logging System
-
-**File:** `server/utils/logger.py`
-
-Each server startup creates a new session directory:
-```
+```text
 logs/session_YYYYMMDD_HHMMSS/
-├── main.log          # DEBUG-level stream for all modules
-└── tools/
-    ├── 001_search_papers_tool.json
-    ├── 002_ingest_paper_tool.json
-    └── ...
++-- main.log
++-- usage.log
++-- tools/
+    +-- 001_<tool>.json
+    +-- 002_<tool>.json
+    +-- ...
 ```
 
-- `init_logging()` — called once at startup; sets up file + console handlers
-- `get_logger(name)` — standard Python logger by module name
-- `log_invocation(tool_name, arguments, output, error)` — writes numbered JSON file with timestamp, arguments, output or error
+Each LangChain baseline run writes logs to:
 
----
+```text
+logs/langchain_session_YYYYMMDD_HHMMSS/
++-- main.log
++-- usage.log
++-- final_output.md
++-- tools/
+    +-- 001_<tool>.json
+    +-- 002_<tool>.json
+    +-- ...
+```
+
+Tool invocation logs should never be written to the repository root. The logger
+initializes a session directory before any invocation log is written.
+
+The report tool logs only metadata and character counts for the returned
+Markdown, not the entire report body.
+
+## Search Architecture
+
+Search is deliberately simple:
+
+```text
+search_papers_tool(query: str, limit: int)
+```
+
+The tool executes the query against the configured academic sources and returns
+paper metadata. It does not expand niche terminology, generate synonyms, or run
+multiple hidden queries.
+
+That work belongs to the orchestrator because:
+
+- query planning is part of the research-agent behavior being studied;
+- hardcoded backend expansions would bias specific domains;
+- hidden expansion makes failures harder to explain;
+- different orchestrators should be comparable on planning quality.
+
+For a niche topic such as "vibecoding security", the orchestrator should search
+both the literal term and adjacent academic terms such as AI-assisted coding,
+LLM code generation security, secure code generation, and human-AI programming
+workflows. The exact queries should be planned by the orchestrator at runtime,
+not embedded in backend code.
+
+## Project State and Paper Membership
+
+Projects are reproducibility boundaries. A clean workflow should create the
+project with overwrite enabled, then add only successfully profiled papers.
+
+Important behavior:
+
+- project names are slugified;
+- `create_project(..., overwrite=true)` clears previous membership;
+- `batch_add_to_project_tool` only adds papers with profiles;
+- unprofiled or failed papers are skipped rather than silently included;
+- `get_workflow_status_tool` reports readiness, latest artifacts, counts, and
+  recommended next actions.
+
+This prevents old papers from contaminating a new workflow run.
+
+## Background Jobs
+
+Long-running work is performed through background jobs:
+
+- batch profile building;
+- batch gap validation.
+
+Job state and results are persisted under `data/jobs/`. The job manager uses
+file locking and Windows-safe retry behavior to avoid transient file access
+failures during concurrent writes.
+
+The orchestrator should poll with `get_job_status_tool` and avoid tight polling
+loops. When a job completes, the result can be read with `get_job_result_tool`.
+
+## Gap Detection and Validation
+
+Gap detection creates candidate gaps from the selected project papers. Gap
+validation then checks whether each candidate is already addressed in external
+literature.
+
+Validation is intentionally conservative:
+
+- direct evidence must match the domain, security/threat dimension where
+  relevant, and the missing contribution;
+- generic adjacent work should not close a gap;
+- `already_addressed` requires strong direct evidence;
+- incomplete evidence should become `partially_addressed`;
+- vague but potentially useful gaps should become `needs_refinement`;
+- gaps without strong external evidence remain `confirmed_candidate_gap`.
+
+Validation artifacts include evidence classifications, scores, evidence titles,
+and reasons so decisions are traceable.
+
+## Experiment Suggestion Rules
+
+Experiment generation should use validated gaps when validation exists.
+
+Included statuses:
+
+- `confirmed_candidate_gap`
+- `partially_addressed`
+- `needs_refinement`
+
+Excluded statuses:
+
+- `already_addressed`
+
+If all gaps are already addressed:
+
+- return zero experiments;
+- do not ask the LLM to invent experiments anyway;
+- save the zero-experiment artifact;
+- explain that all detected gaps were externally addressed.
+
+When experiments are generated:
+
+- prefer fewer distinct experiments over near-duplicates;
+- deduplicate deterministic repeats;
+- ground each experiment in at least one project paper when possible;
+- include title, hypothesis, method, feasibility, builds_on, and gap addressed.
+
+## Report Generation
+
+`generate_project_report_tool` is the canonical final-output tool.
+
+It:
+
+- reads the latest project artifacts;
+- includes project summary, papers, gaps, validation, experiments, and
+  bibliography;
+- auto-generates a bibliography if requested and missing;
+- saves the report under `data/artifacts/reports/`;
+- returns the same Markdown as `report_markdown`.
+
+The orchestrator should paste `report_markdown` into chat as the final answer.
+It should not replace it with a custom executive summary unless explicitly
+asked.
+
+## MCP vs LangChain Baseline
+
+The baseline exists to compare orchestration approaches, not to become a
+separate product.
+
+| Concern | MCP server | LangChain baseline |
+|---|---|---|
+| Orchestrator | Claude Desktop or MCP host | LangChain tool-calling agent |
+| Backend services | `server/services/` | Reused from `server/services/` |
+| Tool wrappers | `server/tools/` | `langchain_baseline/tools/` |
+| Logs | `logs/session_*` | `logs/langchain_session_*` |
+| Gap artifacts | `gap_analysis_*.json` | `lc_gap_analysis_*.json` |
+| Final output | `report_markdown` | `report_markdown` |
+
+The baseline prompt mirrors the MCP workflow guide:
+
+- plan 2-4 search queries itself;
+- use a clean project;
+- ingest/profile/add papers in the correct order;
+- detect gaps before validation;
+- validate before experiments;
+- generate bibliography and report;
+- paste the deterministic report.
 
 ## Environment Variables
 
 | Variable | Required | Description |
 |---|---|---|
-| `IONOS_API_TOKEN` | Yes | Bearer token for IONOS AI Model Hub |
-| `IONOS_BASE_URL` | Yes | Base URL for IONOS OpenAI-compatible API |
-| `IONOS_MODEL` | Yes | Model ID, e.g. `meta-llama/Llama-3.3-70B-Instruct` |
-| `S2_API_KEY` | No | Semantic Scholar API key (higher rate limits) |
-| `FULL_TEXT_CHAR_LIMIT` | No | Max chars for single-pass LLM (default: `80000`) |
+| `IONOS_API_TOKEN` | Yes | Bearer token for IONOS AI Model Hub. |
+| `IONOS_BASE_URL` | Yes | OpenAI-compatible IONOS endpoint. |
+| `IONOS_MODEL` | Yes | Model used by backend LLM calls. |
+| `S2_API_KEY` | No | Semantic Scholar API key for better rate limits. |
+| `FULL_TEXT_CHAR_LIMIT` | No | Max chars for single-pass profile extraction. |
+| `WORKFLOW_MAX_PAPERS` | No | Default max papers for normal workflow batches. |
+| `LC_ORCHESTRATOR_PROVIDER` | Baseline only | `ionos` or `anthropic`. |
+| `LC_ORCHESTRATOR_MODEL` | Baseline only | Overrides baseline orchestrator model. |
+| `ANTHROPIC_API_KEY` | Baseline only | Required if using Anthropic baseline orchestration. |
 
-Loaded from `.env` via `python-dotenv` before all other imports in `main.py`.
+## Running the System
 
----
+### MCP Server
 
-## Tool Dependency Map
+Claude Desktop launches the MCP server through its MCP configuration. The user
+can then issue a natural prompt:
 
-```
-search_papers_tool          (no prerequisites)
-analyze_papers_tool         (no prerequisites — operates on search results)
-create_project_tool         (no prerequisites)
-list_projects_tool          (no prerequisites)
-ingest_paper_tool           (no prerequisites)
-add_to_project_tool         requires: create_project_tool
-index_paper_tool            requires: ingest_paper_tool
-retrieve_chunks_tool        requires: index_paper_tool
-extract_paper_insights_tool requires: ingest_paper_tool
-                            fallback also requires: index_paper_tool
-build_paper_profile_tool    requires: ingest_paper_tool
-                            fallback also requires: index_paper_tool
-synthesize_papers_tool      requires: build_paper_profile_tool OR extract_paper_insights_tool
-detect_gaps_tool            requires: build_paper_profile_tool OR extract_paper_insights_tool
-                            (minimum 2 papers)
-suggest_experiments_tool    requires: build_paper_profile_tool
-                            (minimum 2 papers; runs gap detection internally)
+```text
+Find research gaps and suggest experiments for MCP best practices and safety.
 ```
 
-**Recommended full pipeline:**
-```
-1. create_project_tool       → name the research session
-2. search_papers_tool        → find paper IDs
-3. ingest_paper_tool         → download + parse PDF           ┐ repeat
-4. index_paper_tool          → embed into ChromaDB            │ for each
-5. build_paper_profile_tool  → rich LLM profile               │ paper
-6. add_to_project_tool       → register in project manifest   ┘
-7. detect_gaps_tool          → cross-paper gap analysis  (project="...")
-8. suggest_experiments_tool  → concrete experiment proposals (project="...")
+The orchestrator should use the workflow guide and tools to complete the
+workflow.
+
+### LangChain Baseline
+
+```powershell
+.\.venv\Scripts\python.exe .\langchain_baseline\main.py "Find research gaps and suggest experiments for LLM agent tool-use security."
 ```
 
----
+The baseline writes logs to `logs/langchain_session_*` and saves the final chat
+output to `final_output.md`.
 
-## Changelog
+### Tests
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest tests
+```
+
+## Non-Goals
+
+The current architecture is not trying to:
+
+- hide the complete workflow behind one opaque tool;
+- hardcode topic-specific search expansions in the backend;
+- generate presentation visuals by default;
+- replace human literature review judgment;
+- guarantee that every external paper can be ingested if no accessible PDF or
+  metadata is available.
+
+## Known Limitations
+
+- Closed-access or malformed PDFs may fail ingestion.
+- Search quality still depends on the orchestrator planning good queries.
+- LLM extraction can produce imperfect profiles, especially from poor PDFs.
+- Validation is conservative but still metadata-dependent.
+- Human review is still required before treating gaps as thesis-level claims.
+- The LangChain baseline may behave differently depending on the selected
+  orchestrator model.
+
+## Maintenance Checklist
+
+When adding or removing tools:
+
+1. Update `server/main.py`.
+2. Update `langchain_baseline/tools/__init__.py` if baseline parity is needed.
+3. Update `get_research_workflow_guide_tool`.
+4. Update `langchain_baseline/main.py` prompt guidance if orchestration changes.
+5. Update this file.
+6. Add or update tests.
+7. Run the full test suite.
+
+When changing artifact paths or schemas:
+
+1. Update the producing service.
+2. Update `workflow_status.py`.
+3. Update `project_report.py`.
+4. Update baseline wrappers if needed.
+5. Update this file.
+
+## Recent Architecture Changes
 
 | Date | Change |
 |---|---|
-| 2026-04-14 | Initial architecture documented |
-| 2026-04-14 | Added `paper_id` to `search_papers_tool` output (arXiv atom:id + S2 externalIds) |
-| 2026-04-14 | `build_paper_profile_tool`: added priority-sections fallback (three-tier context selection) |
-| 2026-04-14 | `gap_detector.py`: added prompt rule prohibiting restatement of authors' own future_work/limitations |
-| 2026-04-14 | Added project management system (`project_manager.py`, `manage_project.py`, 3 new tools) |
-| 2026-04-14 | `detect_gaps_tool` and `synthesize_papers_tool`: added optional `project` parameter |
-| 2026-04-14 | Added retry/backoff to `arxiv_service.py` and `semantic_scholar_service.py` (4 attempts, 5/10/20s) |
-| 2026-04-17 | Added `suggest_experiments_tool` + `experiment_suggester.py` service |
-| 2026-04-17 | `analyze_papers`: replaced word-counting with LLM-powered analysis + fallback |
+| 2026-05-21 | Replaced old manual 13-tool architecture with the current guided workflow architecture. |
+| 2026-05-21 | Added MCP and LangChain workflow guide parity. |
+| 2026-05-21 | Made query expansion orchestrator-owned rather than backend-hardcoded. |
+| 2026-05-21 | Made project reports the canonical final chat output via `report_markdown`. |
+| 2026-05-21 | Added workflow status checks for ordering, resume, and artifact discovery. |
+| 2026-05-21 | Hardened project state by using clean projects and profile-required membership. |
+| 2026-05-21 | Added deterministic report/bibliography behavior and stricter experiment filtering. |
+| 2026-05-21 | Fixed session logging so tool logs stay under per-session log directories. |
