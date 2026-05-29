@@ -16,6 +16,12 @@ logger = get_logger(__name__)
 
 _SUPPORTED_FORMATS = {"bibtex", "markdown", "ieee", "plaintext"}
 _ARTIFACTS_DIR = DATA_DIR / "artifacts" / "bibliographies"
+_MAX_ARTIFACT_STEM_LEN = 80
+
+
+def _safe_artifact_stem(text: str, fallback: str = "papers") -> str:
+    stem = re.sub(r"[^A-Za-z0-9_.-]", "-", text or fallback).strip("-")
+    return (stem[:_MAX_ARTIFACT_STEM_LEN].strip("-") or fallback)
 
 
 def _looks_bad_title(title: str) -> bool:
@@ -355,7 +361,7 @@ def generate_bibliography(
     artifact_path = ""
     if save:
         _ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
-        stem = re.sub(r"[^A-Za-z0-9_.-]", "-", project_name or "papers").strip("-") or "papers"
+        stem = _safe_artifact_stem(project_name or "papers")
         extension = "bib" if fmt == "bibtex" else "md"
         path = _ARTIFACTS_DIR / f"{stem}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.{extension}"
         path.write_text(bibliography, encoding="utf-8")

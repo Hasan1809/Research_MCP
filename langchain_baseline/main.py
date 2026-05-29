@@ -30,7 +30,8 @@ from langchain_baseline.utils.usage_tracker import log_usage
 init_logging()
 logger = get_logger(__name__)
 
-DEFAULT_NUM_PAPERS = 8
+DEFAULT_NUM_PAPERS = 3
+RATE_LIMIT_RETRY_SECONDS = int(os.environ.get("LC_RATE_LIMIT_RETRY_SECONDS", "75"))
 
 RESEARCH_OUTPUT_TEMPLATE = """---
 ## Research Analysis: {topic}
@@ -86,8 +87,18 @@ def normalize_research_topic(user_request: str) -> str:
     for prefix in prefixes:
         if lowered.startswith(prefix):
             return text[len(prefix):].strip(" .:")
+    request_starts = (
+        "find",
+        "identify",
+        "suggest",
+        "run",
+        "execute",
+        "research",
+        "analyze",
+        "analyse",
+    )
     match = re.search(r"\bfor\s+(.+?)(?:\s+using\s+research\s+agent)?\.?$", text, flags=re.IGNORECASE)
-    if match and any(verb in lowered for verb in ("find", "gap", "experiment", "research agent")):
+    if match and lowered.startswith(request_starts):
         return match.group(1).strip(" .:")
     return text
 
@@ -385,7 +396,17 @@ def main() -> None:
 
     started_at = time.time()
     agent = create_agent()
-    result = agent.invoke({"input": query})
+    try:
+        result = agent.invoke({"input": query})
+    except Exception as e:
+        if "RateLimitError" not in type(e).__name__ and "rate_limit" not in str(e).lower():
+            raise
+        logger.warning(
+            "Orchestrator rate limit hit; waiting %d seconds before one retry.",
+            RATE_LIMIT_RETRY_SECONDS,
+        )
+        time.sleep(RATE_LIMIT_RETRY_SECONDS)
+        result = agent.invoke({"input": query})
     final_output = str(result.get("output", "")).strip()
     output_path = save_final_output(final_output)
     logger.info("LangChain baseline completed in %.2fs", time.time() - started_at)

@@ -10,10 +10,12 @@ logger = get_logger(__name__)
 _PROJECTS_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "data", "projects")
 
 _SLUG_RE = re.compile(r"[^a-z0-9-]")
+_MAX_PROJECT_SLUG_LEN = 80
 
 
 def _slugify(name: str) -> str:
-    return _SLUG_RE.sub("-", name.strip().lower()).strip("-")
+    slug = _SLUG_RE.sub("-", name.strip().lower()).strip("-")
+    return slug[:_MAX_PROJECT_SLUG_LEN].strip("-")
 
 
 def _project_path(name: str) -> str:

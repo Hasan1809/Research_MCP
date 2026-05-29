@@ -83,6 +83,7 @@ logger = get_logger(__name__)
 
 _ANALYSIS_DIR = DATA_DIR / "analysis"
 _MAX_FULL_TEXT_CHARS = FULL_TEXT_CHAR_LIMIT
+_MAX_SEARCH_ABSTRACT_CHARS = 700
 
 _PROFILE_QUERIES = [
     "research problem motivation background introduction",
@@ -249,14 +250,34 @@ def _normalize_paper_ids_input(paper_ids: Any) -> list[str] | None:
     return [str(paper_id) for paper_id in paper_ids if str(paper_id).strip()]
 
 
+def _truncate_text(value: Any, max_chars: int) -> str:
+    text = str(value or "").strip()
+    if len(text) <= max_chars:
+        return text
+    return text[:max_chars].rstrip() + "..."
+
+
+def _compact_search_result(paper: dict) -> dict:
+    return {
+        "paper_id": paper.get("paper_id") or paper.get("id") or "",
+        "source": paper.get("source") or "",
+        "title": paper.get("title") or "",
+        "authors": paper.get("authors") or [],
+        "year": paper.get("year"),
+        "abstract": _truncate_text(paper.get("abstract"), _MAX_SEARCH_ABSTRACT_CHARS),
+        "url": paper.get("url") or paper.get("pdf_url") or "",
+    }
+
+
 def search_papers_impl(query: str, limit: int) -> list[dict]:
     logger.info("LangChain baseline search: query=%r limit=%d", query, limit)
     result = fetch_papers(query, limit)
     save_search_metadata(result)
+    compact = [_compact_search_result(paper) for paper in result]
     log_invocation("lc_search_papers", {"query": query, "limit": limit}, output={
         "result_count": len(result),
     })
-    return result
+    return compact
 
 
 def ingest_paper_impl(paper_id: str, source: str) -> dict:

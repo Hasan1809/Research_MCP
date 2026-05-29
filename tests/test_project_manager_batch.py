@@ -77,3 +77,16 @@ def test_existing_add_paper_to_project_still_works(tmp_path, monkeypatch):
     assert manifest["papers"][0]["paper_id"] == "2603.17419"
     assert manifest["papers"][0]["source"] == "arxiv"
     assert set(manifest["papers"][0].keys()) == {"paper_id", "source", "added"}
+
+
+def test_project_slug_is_capped_for_windows_paths(tmp_path, monkeypatch):
+    monkeypatch.setattr(project_manager, "_PROJECTS_DIR", str(tmp_path))
+
+    manifest = project_manager.create_project(
+        "papers, select relevant papers, ingest or retrieve them, build paper profiles, "
+        "detect research gaps, validate the gaps where possible, suggest experiments, "
+        "generate a bibliography, and generate the final report",
+    )
+
+    assert len(manifest["name"]) <= 80
+    assert (tmp_path / f"{manifest['name']}.json").exists()
